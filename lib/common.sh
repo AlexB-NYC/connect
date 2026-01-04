@@ -3,6 +3,11 @@
 
 set -euo pipefail
 
+debug_enabled() {
+  # Enabled if CONNECT_DEBUG is set to a non-empty, non-zero value
+  [[ -n "${CONNECT_DEBUG:-}" && "${CONNECT_DEBUG:-0}" != "0" ]]
+}
+
 die() {
   echo "ERROR: $*" >&2
   exit 1
@@ -13,8 +18,14 @@ warn() {
 }
 
 info() {
-  echo "INFO: $*" >&2
+  # informational / tracing output (debug-only)
+  if debug_enabled; then
+    echo "INFO: $*" >&2
+  fi
 }
+
+ok() { echo "$*" >&2; }
+
 
 trim() {
   local s="$1"

@@ -13,18 +13,21 @@ BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 usage() {
   cat <<'EOF' >&2
 Usage:
-  engine [menu|add|edit|del] [--config /path/to/servers.conf] [number]
+  engine [menu|add|edit|del] [--config /path/to/servers.conf] [--debug] [number]
 
 If no subcommand is provided, defaults to "menu".
 For "edit" and "del", an optional server number may be provided.
+
 Examples:
   engine edit 3
   engine del 2
+  engine --debug add
+  engine add --debug
 EOF
   exit 1
 }
 
-# ---- arg parsing ----
+# ---- arg parsing (pass 1: global flags before subcmd) ----
 CONFIG_FILE=""
 while (( $# )); do
   case "$1" in
@@ -32,6 +35,10 @@ while (( $# )); do
       shift
       [[ $# -gt 0 ]] || usage
       CONFIG_FILE="$1"
+      shift
+      ;;
+    --debug)
+      export CONNECT_DEBUG=1
       shift
       ;;
     -h|--help) usage ;;
@@ -44,6 +51,24 @@ if [[ "${1:-}" =~ ^(menu|add|edit|del)$ ]]; then
   subcmd="$1"
   shift
 fi
+
+# ---- arg parsing (pass 2: allow flags after subcmd too) ----
+while (( $# )); do
+  case "$1" in
+    --config)
+      shift
+      [[ $# -gt 0 ]] || usage
+      CONFIG_FILE="$1"
+      shift
+      ;;
+    --debug)
+      export CONNECT_DEBUG=1
+      shift
+      ;;
+    -h|--help) usage ;;
+    *) break ;;
+  esac
+done
 
 number_arg="${1:-}"
 
@@ -88,11 +113,20 @@ print_servers() {
 }
 
 _trace_config_perms() {
-  # keep this lightweight and only called in add/edit flows
+  debug_enabled || return 0
+
   local cfg="$1"
   info "engine: trace perms for $cfg"
-  ls -ld "$(dirname "$cfg")" 2>/dev/null || true
-  ls -l "$cfg" 2>/dev/null || true
+
+  local d f out
+  d="$(dirname "$cfg")"
+  f="$cfg"
+
+  out="$(ls -ld "$d" 2>/dev/null || true)"
+  [[ -n "$out" ]] && info "$out"
+
+  out="$(ls -l "$f" 2>/dev/null || true)"
+  [[ -n "$out" ]] && info "$out"
 }
 
 do_add() {
@@ -141,7 +175,7 @@ do_add() {
 
     info "Testing SSH connectivity (secure defaults)."
     if test_ssh_connection "$remote_user" "$remote_host" "$key_path" 0 0; then
-      info "SSH test succeeded."
+      ok "SSH test succeeded."
       info "engine:add: SSH test returned success; continuing to save…"
     else
       warn "SSH test failed."
@@ -155,33 +189,32 @@ do_add() {
     info "engine:add: SSH test skipped by user"
   fi
 
-info "engine:add: Preparing to build config block"
+  info "engine:add: Preparing to build config block"
 
-if ! declare -F build_section_block >/dev/null 2>&1; then
-  die "engine:add: build_section_block() is NOT defined (config.sh not loaded as expected)"
-fi
-info "engine:add: build_section_block() is defined; calling it now"
+  if ! declare -F build_section_block >/dev/null 2>&1; then
+    die "engine:add: build_section_block() is NOT defined (config.sh not loaded as expected)"
+  fi
+  info "engine:add: build_section_block() is defined; calling it now"
 
-local block rc
-block=""
+  local block rc
+  block=""
 
-# run WITHOUT letting set -e kill us before we can report
-set +e
-block="$(build_section_block "$section" "$remote_user" "$remote_host" "$remote_path" "$mount_label" "$ssh_key" "$mount_point" "$log_file" 2>&1)"
-rc=$?
-set -e
+  set +e
+  block="$(build_section_block "$section" "$remote_user" "$remote_host" "$remote_path" "$mount_label" "$ssh_key" "$mount_point" "$log_file" 2>&1)"
+  rc=$?
+  set -e
 
-if (( rc != 0 )); then
-  warn "engine:add: build_section_block failed (rc=$rc)"
-  warn "engine:add: build_section_block output was:"
-  printf '%s\n' "$block" >&2
-  warn "engine:add: build_section_block definition is:"
-  declare -f build_section_block >&2
-  die "engine:add: aborting before append_section"
-fi
+  if (( rc != 0 )); then
+    warn "engine:add: build_section_block failed (rc=$rc)"
+    warn "engine:add: build_section_block output was:"
+    printf '%s\n' "$block" >&2
+    warn "engine:add: build_section_block definition is:"
+    declare -f build_section_block >&2
+    die "engine:add: aborting before append_section"
+  fi
 
-info "engine:add: build_section_block returned successfully"
-info "engine:add: block bytes=$(printf '%s' "$block" | wc -c)"
+  info "engine:add: build_section_block returned successfully"
+  info "engine:add: block bytes=$(printf '%s' "$block" | wc -c)"
 
   info "engine:add: Preparing to update file"
   info "engine:add: Saving file at $CONFIG_FILE"
@@ -199,10 +232,10 @@ info "engine:add: block bytes=$(printf '%s' "$block" | wc -c)"
   info "engine:add: file size after append: ${after} bytes"
   _trace_config_perms "$CONFIG_FILE"
 
+  ok "Server data saved."
   info "Saved [$section]."
   info "engine:add: end"
 }
-
 
 do_edit() {
   echo
@@ -259,7 +292,7 @@ do_edit() {
 
     info "Testing SSH connectivity (secure defaults)."
     if test_ssh_connection "$remote_user" "$remote_host" "$key_path" 0 0; then
-      info "SSH test succeeded."
+      ok "SSH test succeeded."
       info "engine:edit: continuing to save…"
     else
       warn "SSH test failed."
@@ -279,6 +312,7 @@ do_edit() {
   replace_section "$CONFIG_FILE" "$section" "$block"
   _trace_config_perms "$CONFIG_FILE"
 
+  ok "Server data saved."
   info "Updated [$section]."
   info "engine:edit: end"
 }
@@ -316,6 +350,7 @@ do_del() {
   delete_section "$CONFIG_FILE" "$section"
   _trace_config_perms "$CONFIG_FILE"
 
+  ok "Server deleted."
   info "Deleted [$section]."
   info "engine:del: end"
 }
