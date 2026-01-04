@@ -126,7 +126,8 @@ print_list_table_and_prompt() {
 
     ui_render_server_table "${servers[@]}" -- "${hosts[@]}" -- "${users[@]}" -- "${keys[@]}"
 
-    local action num
+    local action="" num=""
+
     action="$(ui_prompt_list_action)"
 
     if [[ "$action" == connect_num:* ]]; then
