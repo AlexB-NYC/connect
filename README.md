@@ -1,4 +1,3 @@
-````markdown
 # connect
 
 `connect` is a small CLI tool for quickly connecting to frequently-used servers via **SSH** and optionally mounting remote paths via **SSHFS**. It uses a plain INI-style config file (`servers.conf`) and includes an interactive manager for adding/editing/removing entries.
