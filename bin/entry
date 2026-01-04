@@ -1,3 +1,4 @@
+# bin/entry
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -12,7 +13,7 @@ usage() {
 Usage:
   connect <servername> [--ssh | --fs] [-v|--verbose] [--insecure]
   connect --list
-  connect [--engine | --add | --edit | --del]
+  connect [--add | --edit | --del]
 
 Modes (mutually exclusive):
   --ssh           only SSH (no sshfs)
@@ -24,7 +25,6 @@ Options:
   --insecure      disable host key checking (not recommended)
 
 Engine:
-  --engine        open interactive server manager
   --add           add server entry (delegates to engine)
   --edit          edit server entry (delegates to engine)
   --del           delete server entry (delegates to engine)
@@ -37,7 +37,7 @@ mode="both"      # both|ssh|fs
 verbose=0
 insecure=0
 do_list=0
-engine_action="" # menu|add|edit|del
+engine_action="" # add|edit|del
 
 while (( $# )); do
   case "$1" in
@@ -47,10 +47,9 @@ while (( $# )); do
     --insecure) insecure=1; shift ;;
     --list) do_list=1; shift ;;
 
-    --engine) engine_action="menu"; shift ;;
-    --add)    engine_action="add"; shift ;;
-    --edit)   engine_action="edit"; shift ;;
-    --del)    engine_action="del"; shift ;;
+    --add)  engine_action="add"; shift ;;
+    --edit) engine_action="edit"; shift ;;
+    --del)  engine_action="del"; shift ;;
 
     -h|--help) usage ;;
     -* ) usage ;;
@@ -70,6 +69,12 @@ if [[ -n "$engine_action" ]]; then
 fi
 
 CONFIG_FILE="$(resolve_config_file)"
+
+# Ensure user config exists for interactive flows (e.g. --list).
+if [[ ! -e "$CONFIG_FILE" ]]; then
+  mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true
+  : > "$CONFIG_FILE" 2>/dev/null || true
+fi
 
 print_list_table_and_prompt() {
   [[ -r "$CONFIG_FILE" ]] || die "Config file not readable: $CONFIG_FILE"
@@ -92,8 +97,7 @@ print_list_table_and_prompt() {
   local count="${#servers[@]}"
   if (( count == 0 )); then
     echo "No servers found in: $CONFIG_FILE" >&2
-    echo "Run: connect --add" >&2
-    exit 0
+    echo "No servers found. Press A to add one, or run: connect --add" >&2
   fi
 
   local max_idx=1 max_name=4 max_host=4 max_user=4 max_key=3
@@ -151,7 +155,6 @@ print_list_table_and_prompt() {
   IFS= read -r -n 1 sel || true
   echo >&2
 
-  # Enter results in empty string here
   [[ -n "$sel" ]] || exit 0
 
   case "$sel" in
@@ -171,7 +174,6 @@ print_list_table_and_prompt() {
       num="$(prompt "[CONNECT] $selection_prompt" "")"
       ;;
     [0-9])
-      # If they press a digit, use it as the default so multi-digit still works.
       num="$(prompt "$selection_prompt" "$sel")"
       ;;
     *)
@@ -208,9 +210,9 @@ print_list_table_and_prompt() {
       esac
 
       if [[ -n "$mode_flag" ]]; then
-        exec "$BASE_DIR/bin/connect" "${servers[num-1]}" "$mode_flag"
+        exec "$BASE_DIR/bin/entry" "${servers[num-1]}" "$mode_flag"
       else
-        exec "$BASE_DIR/bin/connect" "${servers[num-1]}"
+        exec "$BASE_DIR/bin/entry" "${servers[num-1]}"
       fi
       ;;
   esac

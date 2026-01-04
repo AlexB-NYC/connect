@@ -1,3 +1,4 @@
+# bin/engine
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -229,7 +230,7 @@ do_connect() {
   local section
   section="$(pick_server_by_number "$choice")"
   [[ -n "$section" ]] || die "Invalid selection."
-  exec "$BASE_DIR/bin/connect" "$section"
+  exec "$BASE_DIR/bin/entry" "$section"
 }
 
 main_loop() {
