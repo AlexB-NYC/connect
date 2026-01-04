@@ -83,40 +83,30 @@ fi
 
 CONFIG_FILE="$(resolve_config_file)"
 
-# Ensure user config exists for interactive flows (e.g. --list).
+# Ensure user config exists for interactive flows (e.g. --list)
 if [[ ! -e "$CONFIG_FILE" ]]; then
   mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true
   : > "$CONFIG_FILE" 2>/dev/null || true
 fi
 
-collect_server_rows() {
-  # outputs globals: servers hosts users keys
-  servers=()
-  hosts=()
-  users=()
-  keys=()
-
-  local s i=0
-  while IFS= read -r s; do
-    [[ -n "$s" ]] || continue
-    servers[i]="$s"
-    users[i]="$(config_get "$CONFIG_FILE" "$s" remote_user || true)"
-    hosts[i]="$(config_get "$CONFIG_FILE" "$s" remote_host || true)"
-    keys[i]="$(config_get "$CONFIG_FILE" "$s" ssh_key || true)"
-    i=$((i+1))
-  done < <(list_servers "$CONFIG_FILE")
-}
-
 print_list_table_and_prompt() {
   [[ -r "$CONFIG_FILE" ]] || die "Config file not readable: $CONFIG_FILE"
 
-  # Loop forever until user quits or connects (connect uses exec and never returns)
   while true; do
-    local -a servers hosts users keys
-    collect_server_rows
+    local -a servers=() hosts=() users=() keys=()
+    local s i=0
+
+    while IFS= read -r s; do
+      [[ -n "$s" ]] || continue
+      servers[i]="$s"
+      users[i]="$(config_get "$CONFIG_FILE" "$s" remote_user || true)"
+      hosts[i]="$(config_get "$CONFIG_FILE" "$s" remote_host || true)"
+      keys[i]="$(config_get "$CONFIG_FILE" "$s" ssh_key || true)"
+      i=$((i+1))
+    done < <(list_servers "$CONFIG_FILE")
+
     local count="${#servers[@]}"
 
-    # Empty config: only A/Q are valid.
     if (( count == 0 )); then
       local action
       action="$(ui_no_servers_menu "$CONFIG_FILE")"
@@ -139,35 +129,24 @@ print_list_table_and_prompt() {
     local action num
     action="$(ui_prompt_list_action)"
 
-    # If they typed digits, that means "connect to number" (after Enter)
     if [[ "$action" == connect_num:* ]]; then
       num="${action#connect_num:}"
       action="connect"
     fi
 
     case "$action" in
-      quit)
-        exit 0
-        ;;
+      quit) exit 0 ;;
       add)
         "$BASE_DIR/bin/engine" "${engine_args[@]}" add
         continue
         ;;
-      edit|del|connect)
-        # handled below
-        ;;
-      invalid:*)
-        die "Unknown selection: ${action#invalid:}"
-        ;;
-      *)
-        die "Internal: unexpected action: $action"
-        ;;
+      edit|del|connect) ;;
+      invalid:*) die "Unknown selection: ${action#invalid:}" ;;
+      *) die "Internal: unexpected action: $action" ;;
     esac
 
-    local selection_prompt
-    selection_prompt="Enter server number"
+    local selection_prompt="Enter server number"
 
-    # If we didn't already get a number from connect_num:N, prompt for one
     if [[ -z "${num:-}" ]]; then
       case "$action" in
         edit)    num="$(ui_prompt_server_number "[EDIT] $selection_prompt" "")" ;;
@@ -176,7 +155,6 @@ print_list_table_and_prompt() {
       esac
     fi
 
-    # Blank = cancel back to list
     if [[ -z "${num:-}" ]]; then
       ok "Cancelled."
       continue
@@ -191,7 +169,6 @@ print_list_table_and_prompt() {
       ok "Number out of range."
       continue
     fi
-
 
     case "$action" in
       edit)
@@ -218,8 +195,6 @@ print_list_table_and_prompt() {
         esac
         (( debug )) && reexec_args+=(--debug)
 
-        # IMPORTANT: connecting should replace the current process so that
-        # when SSH exits, we return to the shell (not back to the list).
         exec "$BASE_DIR/bin/entry" "${reexec_args[@]}"
         ;;
     esac
@@ -231,9 +206,9 @@ if (( do_list )); then
   exit 0
 fi
 
-# If no server specified, drop into interactive menu
+# No args / no server: show usage (v1.0.1 behavior)
 if [[ -z "$server" ]]; then
-  exec "$BASE_DIR/bin/engine" "${engine_args[@]}" menu
+  usage
 fi
 
 section_exists "$CONFIG_FILE" "$server" || die "Server not found in config: [$server]"
@@ -271,7 +246,6 @@ fi
 mkdir -p "$mount_point" "$(dirname "$log_file")"
 
 log() {
-  # log is “status+logfile”; keep as-is for now
   echo "[$(date +'%F %T')] $*" | tee -a "$log_file" >&2
 }
 

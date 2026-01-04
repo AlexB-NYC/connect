@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# lib/ui.sh
 set -euo pipefail
 
 # expects: common.sh (ok/info/warn/die/prompt/confirm/trim)
@@ -220,19 +219,4 @@ ui_prompt_connect_mode() {
     ''|[Bb]) printf "both" ;;
     *) printf "invalid:%s" "$k" ;;
   esac
-}
-
-# Engine "menu" UI (simple numbered list)
-ui_engine_menu_header() {
-  # args: config_file
-  local cfg="$1"
-  ui_blank_line
-  ui "Config: $cfg"
-  ui "Servers:"
-}
-
-ui_engine_menu_footer() {
-  ui_blank_line
-  ui "[A]dd  [E]dit  [D]el  [Q]uit"
-  ui "Enter a number to connect."
 }
