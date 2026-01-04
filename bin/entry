@@ -83,95 +83,123 @@ fi
 
 CONFIG_FILE="$(resolve_config_file)"
 
-# Ensure user config exists for interactive flows (e.g. --list).
+# Ensure user config exists for interactive flows (e.g. --list)
 if [[ ! -e "$CONFIG_FILE" ]]; then
   mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true
   : > "$CONFIG_FILE" 2>/dev/null || true
 fi
 
-collect_server_rows() {
-  # outputs globals: servers hosts users keys
-  servers=()
-  hosts=()
-  users=()
-  keys=()
-
-  local s i=0
-  while IFS= read -r s; do
-    [[ -n "$s" ]] || continue
-    servers[i]="$s"
-    users[i]="$(config_get "$CONFIG_FILE" "$s" remote_user || true)"
-    hosts[i]="$(config_get "$CONFIG_FILE" "$s" remote_host || true)"
-    keys[i]="$(config_get "$CONFIG_FILE" "$s" ssh_key || true)"
-    i=$((i+1))
-  done < <(list_servers "$CONFIG_FILE")
-}
-
 print_list_table_and_prompt() {
   [[ -r "$CONFIG_FILE" ]] || die "Config file not readable: $CONFIG_FILE"
 
-  local -a servers hosts users keys
-  collect_server_rows
+  while true; do
+    local -a servers=() hosts=() users=() keys=()
+    local s i=0
 
-  local count="${#servers[@]}"
+    while IFS= read -r s; do
+      [[ -n "$s" ]] || continue
+      servers[i]="$s"
+      users[i]="$(config_get "$CONFIG_FILE" "$s" remote_user || true)"
+      hosts[i]="$(config_get "$CONFIG_FILE" "$s" remote_host || true)"
+      keys[i]="$(config_get "$CONFIG_FILE" "$s" ssh_key || true)"
+      i=$((i+1))
+    done < <(list_servers "$CONFIG_FILE")
 
-  # Empty config: only A/Q are valid.
-  if (( count == 0 )); then
-    local action
-    action="$(ui_no_servers_menu "$CONFIG_FILE")"
+    local count="${#servers[@]}"
+
+    if (( count == 0 )); then
+      local action
+      action="$(ui_no_servers_menu "$CONFIG_FILE")"
+      case "$action" in
+        add)
+          "$BASE_DIR/bin/engine" "${engine_args[@]}" add
+          continue
+          ;;
+        quit)
+          exit 0
+          ;;
+        *)
+          die "No servers configured. Choose A to add or Q to quit."
+          ;;
+      esac
+    fi
+
+    ui_render_server_table "${servers[@]}" -- "${hosts[@]}" -- "${users[@]}" -- "${keys[@]}"
+
+    local action="" num=""
+
+    action="$(ui_prompt_list_action)"
+
+    if [[ "$action" == connect_num:* ]]; then
+      num="${action#connect_num:}"
+      action="connect"
+    fi
+
     case "$action" in
-      add)  exec "$BASE_DIR/bin/engine" "${engine_args[@]}" add ;;
       quit) exit 0 ;;
-      *)    die "No servers configured. Choose A to add or Q to quit." ;;
+      add)
+        "$BASE_DIR/bin/engine" "${engine_args[@]}" add
+        continue
+        ;;
+      edit|del|connect) ;;
+      invalid:*) die "Unknown selection: ${action#invalid:}" ;;
+      *) die "Internal: unexpected action: $action" ;;
     esac
-  fi
 
-  ui_render_server_table "${servers[@]}" -- "${hosts[@]}" -- "${users[@]}" -- "${keys[@]}"
+    local selection_prompt="Enter server number"
 
-  local action
-  action="$(ui_prompt_list_action)"
-
-  case "$action" in
-    quit) exit 0 ;;
-    add)  exec "$BASE_DIR/bin/engine" "${engine_args[@]}" add ;;
-    invalid:*) die "Unknown selection: ${action#invalid:}" ;;
-  esac
-
-  local num selection_prompt
-  selection_prompt="Enter server number"
-
-  case "$action" in
-    edit)    num="$(ui_prompt_server_number "[EDIT] $selection_prompt" "")" ;;
-    del)     num="$(ui_prompt_server_number "[DELETE] $selection_prompt" "")" ;;
-    connect) num="$(ui_prompt_server_number "[CONNECT] $selection_prompt" "")" ;;
-    *) die "Internal: unexpected action: $action" ;;
-  esac
-
-  [[ "${num:-}" =~ ^[0-9]+$ ]] || die "Invalid number."
-  (( num >= 1 && num <= count )) || die "Number out of range."
-
-  case "$action" in
-    edit) exec "$BASE_DIR/bin/engine" "${engine_args[@]}" edit "$num" ;;
-    del)  exec "$BASE_DIR/bin/engine" "${engine_args[@]}" del "$num" ;;
-    connect)
-      local mode_choice
-      mode_choice="$(ui_prompt_connect_mode)"
-      case "$mode_choice" in
-        invalid:*) die "Unknown mode selection: ${mode_choice#invalid:}" ;;
+    if [[ -z "${num:-}" ]]; then
+      case "$action" in
+        edit)    num="$(ui_prompt_server_number "[EDIT] $selection_prompt" "")" ;;
+        del)     num="$(ui_prompt_server_number "[DELETE] $selection_prompt" "")" ;;
+        connect) num="$(ui_prompt_server_number "[CONNECT] $selection_prompt" "")" ;;
       esac
+    fi
 
-      local -a reexec_args=()
-      reexec_args+=("${servers[num-1]}")
-      case "$mode_choice" in
-        ssh) reexec_args+=(--ssh) ;;
-        fs)  reexec_args+=(--fs) ;;
-        both) : ;;
-      esac
-      (( debug )) && reexec_args+=(--debug)
+    if [[ -z "${num:-}" ]]; then
+      ok "Cancelled."
+      continue
+    fi
 
-      exec "$BASE_DIR/bin/entry" "${reexec_args[@]}"
-      ;;
-  esac
+    if ! [[ "$num" =~ ^[0-9]+$ ]]; then
+      ok "Invalid number."
+      continue
+    fi
+
+    if ! (( num >= 1 && num <= count )); then
+      ok "Number out of range."
+      continue
+    fi
+
+    case "$action" in
+      edit)
+        "$BASE_DIR/bin/engine" "${engine_args[@]}" edit "$num"
+        continue
+        ;;
+      del)
+        "$BASE_DIR/bin/engine" "${engine_args[@]}" del "$num"
+        continue
+        ;;
+      connect)
+        local mode_choice
+        mode_choice="$(ui_prompt_connect_mode)"
+        case "$mode_choice" in
+          invalid:*) die "Unknown mode selection: ${mode_choice#invalid:}" ;;
+        esac
+
+        local -a reexec_args=()
+        reexec_args+=("${servers[num-1]}")
+        case "$mode_choice" in
+          ssh)  reexec_args+=(--ssh) ;;
+          fs)   reexec_args+=(--fs) ;;
+          both) : ;;
+        esac
+        (( debug )) && reexec_args+=(--debug)
+
+        exec "$BASE_DIR/bin/entry" "${reexec_args[@]}"
+        ;;
+    esac
+  done
 }
 
 if (( do_list )); then
@@ -179,9 +207,9 @@ if (( do_list )); then
   exit 0
 fi
 
-# If no server specified, drop into interactive menu
+# No args / no server: show usage (v1.0.1 behavior)
 if [[ -z "$server" ]]; then
-  exec "$BASE_DIR/bin/engine" "${engine_args[@]}" menu
+  usage
 fi
 
 section_exists "$CONFIG_FILE" "$server" || die "Server not found in config: [$server]"
@@ -219,7 +247,6 @@ fi
 mkdir -p "$mount_point" "$(dirname "$log_file")"
 
 log() {
-  # log is “status+logfile”; keep as-is for now
   echo "[$(date +'%F %T')] $*" | tee -a "$log_file" >&2
 }
 

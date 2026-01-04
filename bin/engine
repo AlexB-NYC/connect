@@ -12,8 +12,6 @@ BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../lib/ui.sh
 . "$BASE_DIR/lib/ui.sh"
 
-# ---- internal arg parsing ----
-# Accept: --debug, --config <path>, then subcmd, then optional number
 CONFIG_FILE=""
 
 parse_flags() {
@@ -37,26 +35,24 @@ parse_flags() {
         ;;
     esac
   done
-
-  # return remaining args via echo (caller captures into array)
   printf "%s\n" "$@"
 }
 
-# Pass 1: flags before subcmd
 mapfile -t _rest < <(parse_flags "$@")
 set -- "${_rest[@]}"
 
-subcmd="menu"
-if [[ "${1:-}" =~ ^(menu|add|edit|del)$ ]]; then
+subcmd=""
+if [[ "${1:-}" =~ ^(add|edit|del)$ ]]; then
   subcmd="$1"
   shift
 fi
 
-# Pass 2: flags after subcmd
 mapfile -t _rest < <(parse_flags "$@")
 set -- "${_rest[@]}"
 
 number_arg="${1:-}"
+
+[[ -n "$subcmd" ]] || die "engine: invalid args (called by entry)"
 
 if [[ -z "$CONFIG_FILE" ]]; then
   CONFIG_FILE="$(resolve_config_file)"
@@ -64,7 +60,6 @@ fi
 info "engine: using CONFIG_FILE=$CONFIG_FILE"
 
 if [[ ! -e "$CONFIG_FILE" ]]; then
-  info "engine: config does not exist yet; creating: $CONFIG_FILE"
   mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true
   : > "$CONFIG_FILE" || die "Cannot create config file: $CONFIG_FILE"
 fi
@@ -84,33 +79,60 @@ pick_server_by_number() {
   printf "%s" ""
 }
 
-_trace_config_perms() {
-  debug_enabled || return 0
+_key_perm_string() {
+  local key_path="$1"
+  ls -l "$key_path" 2>/dev/null | awk '{print $1}'
+}
 
-  local cfg="$1"
-  info "engine: trace perms for $cfg"
+_key_perm_strict_ok() {
+  local perm="$1"
+  [[ -n "$perm" ]] || return 0
+  local group="${perm:4:3}"
+  local other="${perm:7:3}"
+  [[ "$group" == "---" && "$other" == "---" ]]
+}
 
-  local d f out
-  d="$(dirname "$cfg")"
-  f="$cfg"
+prompt_ssh_key_validated() {
+  local prompt_text="$1"
+  local def="${2:-}"
+  local ssh_key key_path perm
 
-  out="$(ls -ld "$d" 2>/dev/null || true)"
-  [[ -n "$out" ]] && info "$out"
+  while true; do
+    ssh_key="$(prompt "$prompt_text" "$def")"
 
-  out="$(ls -l "$f" 2>/dev/null || true)"
-  [[ -n "$out" ]] && info "$out"
+    if [[ -z "$ssh_key" ]]; then
+      printf "%s" ""
+      return 0
+    fi
+
+    key_path="$(normalize_key_path "$ssh_key")"
+
+    if [[ ! -f "$key_path" ]]; then
+      ok "Key not found: $key_path"
+      ok "Ctrl+C to exit"
+      def="$ssh_key"
+      continue
+    fi
+
+    perm="$(_key_perm_string "$key_path")"
+    if ! _key_perm_strict_ok "$perm"; then
+      ok "Incorrect key permissions ($perm). Recommended: chmod 600 '$key_path'"
+      ok "Ctrl+C to exit"
+      def="$ssh_key"
+      continue
+    fi
+
+    printf "%s" "$ssh_key"
+    return 0
+  done
 }
 
 do_add() {
   ui_blank_line
   ui "Add a server entry"
-  info "engine:add: begin"
-  info "engine:add: CONFIG_FILE=$CONFIG_FILE"
-  _trace_config_perms "$CONFIG_FILE"
 
   local section
   section="$(prompt "Server name (section header)" "")"
-  info "engine:add: section='$section'"
   valid_section_name "$section" || die "Invalid server name. Avoid spaces and [ ] characters."
 
   if section_exists "$CONFIG_FILE" "$section"; then
@@ -122,11 +144,9 @@ do_add() {
   remote_host="$(prompt "remote_host" "")"
   remote_path="$(prompt "remote_path" "/")"
   mount_label="$(prompt "mount_label" "")"
-  ssh_key="$(prompt "ssh_key (optional, filename or path)" "")"
+  ssh_key="$(prompt_ssh_key_validated "ssh_key (optional, filename or path)" "")"
   mount_point="$(prompt "mount_point (optional)" "")"
   log_file="$(prompt "log_file (optional)" "")"
-
-  info "engine:add: collected fields user='$remote_user' host='$remote_host' path='$remote_path' label='$mount_label' key='$ssh_key' mp='$mount_point' log='$log_file'"
 
   [[ -n "$remote_user" ]] || die "remote_user required"
   [[ -n "$remote_host" ]] || die "remote_host required"
@@ -134,86 +154,30 @@ do_add() {
   [[ -n "$mount_label" ]] || die "mount_label required"
 
   if confirm "Test connectivity and key before saving?"; then
-    info "engine:add: user requested SSH test"
     local key_path
     key_path="$(normalize_key_path "$ssh_key")"
-    info "engine:add: normalized key_path='$key_path'"
 
-    if [[ -n "$key_path" ]]; then
-      info "engine:add: checking key file"
-      check_key_file "$key_path"
-      info "engine:add: key file OK"
-    fi
-
-    info "Testing SSH connectivity (secure defaults)."
+    ui "Testing SSH connectivity (secure defaults)..."
     if test_ssh_connection "$remote_user" "$remote_host" "$key_path" 0 0; then
       ok "SSH test succeeded."
-      info "engine:add: SSH test returned success; continuing to save…"
     else
       warn "SSH test failed."
-      info "engine:add: SSH test returned failure"
       if ! confirm "Save anyway?"; then
         die "Aborted."
       fi
-      info "engine:add: user chose to save anyway after failure"
     fi
-  else
-    info "engine:add: SSH test skipped by user"
   fi
 
-  info "engine:add: Preparing to build config block"
-
-  if ! declare -F build_section_block >/dev/null 2>&1; then
-    die "engine:add: build_section_block() is NOT defined (config.sh not loaded as expected)"
-  fi
-  info "engine:add: build_section_block() is defined; calling it now"
-
-  local block rc
-  block=""
-
-  set +e
-  block="$(build_section_block "$section" "$remote_user" "$remote_host" "$remote_path" "$mount_label" "$ssh_key" "$mount_point" "$log_file" 2>&1)"
-  rc=$?
-  set -e
-
-  if (( rc != 0 )); then
-    warn "engine:add: build_section_block failed (rc=$rc)"
-    warn "engine:add: build_section_block output was:"
-    printf '%s\n' "$block" >&2
-    warn "engine:add: build_section_block definition is:"
-    declare -f build_section_block >&2
-    die "engine:add: aborting before append_section"
-  fi
-
-  info "engine:add: build_section_block returned successfully"
-  info "engine:add: block bytes=$(printf '%s' "$block" | wc -c)"
-
-  info "engine:add: Preparing to update file"
-  info "engine:add: Saving file at $CONFIG_FILE"
-
-  local before after
-  before="$(wc -c < "$CONFIG_FILE" 2>/dev/null || echo 0)"
-  info "engine:add: file size before append: ${before} bytes"
-
-  if ! append_section "$CONFIG_FILE" "$section" "$block"; then
-    rc=$?
-    die "engine:add: append_section failed (rc=$rc)"
-  fi
-
-  after="$(wc -c < "$CONFIG_FILE" 2>/dev/null || echo 0)"
-  info "engine:add: file size after append: ${after} bytes"
-  _trace_config_perms "$CONFIG_FILE"
+  local block
+  block="$(build_section_block "$section" "$remote_user" "$remote_host" "$remote_path" "$mount_label" "$ssh_key" "$mount_point" "$log_file")"
+  append_section "$CONFIG_FILE" "$section" "$block"
 
   ok "Server data saved."
-  info "Saved [$section]."
-  info "engine:add: end"
 }
 
 do_edit() {
   ui_blank_line
-  info "engine:edit: begin"
-  info "engine:edit: CONFIG_FILE=$CONFIG_FILE"
-  _trace_config_perms "$CONFIG_FILE"
+  ui "Edit a server entry"
 
   local choice section
   if [[ -n "${1:-}" ]]; then
@@ -242,7 +206,7 @@ do_edit() {
   remote_host="$(prompt "remote_host" "$cur_remote_host")"
   remote_path="$(prompt "remote_path" "${cur_remote_path:-/}")"
   mount_label="$(prompt "mount_label" "$cur_mount_label")"
-  ssh_key="$(prompt "ssh_key (optional, blank to remove)" "${cur_ssh_key:-}")"
+  ssh_key="$(prompt_ssh_key_validated "ssh_key (optional, blank to remove)" "${cur_ssh_key:-}")"
   mount_point="$(prompt "mount_point (optional, blank to remove)" "${cur_mount_point:-}")"
   log_file="$(prompt "log_file (optional, blank to remove)" "${cur_log_file:-}")"
 
@@ -252,19 +216,12 @@ do_edit() {
   [[ -n "$mount_label" ]] || die "mount_label required"
 
   if confirm "Test connectivity and key now?"; then
-    info "engine:edit: user requested SSH test"
     local key_path
     key_path="$(normalize_key_path "$ssh_key")"
-    info "engine:edit: normalized key_path='$key_path'"
 
-    if [[ -n "$key_path" ]]; then
-      check_key_file "$key_path"
-    fi
-
-    info "Testing SSH connectivity (secure defaults)."
+    ui "Testing SSH connectivity (secure defaults)..."
     if test_ssh_connection "$remote_user" "$remote_host" "$key_path" 0 0; then
       ok "SSH test succeeded."
-      info "engine:edit: continuing to save…"
     else
       warn "SSH test failed."
       if ! confirm "Save anyway?"; then
@@ -273,26 +230,16 @@ do_edit() {
     fi
   fi
 
-  info "engine:edit: Preparing to build config block"
   local block
   block="$(build_section_block "$section" "$remote_user" "$remote_host" "$remote_path" "$mount_label" "$ssh_key" "$mount_point" "$log_file")"
-
-  info "engine:edit: Preparing to update file"
-  info "engine:edit: Saving file at $CONFIG_FILE"
-
   replace_section "$CONFIG_FILE" "$section" "$block"
-  _trace_config_perms "$CONFIG_FILE"
 
   ok "Server data saved."
-  info "Updated [$section]."
-  info "engine:edit: end"
 }
 
 do_del() {
   ui_blank_line
-  info "engine:del: begin"
-  info "engine:del: CONFIG_FILE=$CONFIG_FILE"
-  _trace_config_perms "$CONFIG_FILE"
+  ui "Delete a server entry"
 
   local choice section
   if [[ -n "${1:-}" ]]; then
@@ -312,61 +259,13 @@ do_del() {
 
   local confirm_name
   confirm_name="$(prompt "Type the server name to confirm" "")"
-  if [[ "$confirm_name" != "$section" ]]; then
-    die "Confirmation did not match. Aborted."
-  fi
+  [[ "$confirm_name" == "$section" ]] || die "Confirmation did not match. Aborted."
 
-  info "engine:del: deleting section [$section]"
   delete_section "$CONFIG_FILE" "$section"
-  _trace_config_perms "$CONFIG_FILE"
-
   ok "Server deleted."
-  info "Deleted [$section]."
-  info "engine:del: end"
-}
-
-do_connect() {
-  local choice="$1"
-  local section
-  section="$(pick_server_by_number "$choice")"
-  [[ -n "$section" ]] || die "Invalid selection."
-  exec "$BASE_DIR/bin/entry" "$section"
-}
-
-main_loop() {
-  while true; do
-    ui_engine_menu_header "$CONFIG_FILE"
-
-    local i=1 line
-    while IFS= read -r line; do
-      printf "  %2d) %s\n" "$i" "$line" >&2
-      i=$((i+1))
-    done < <(list_servers "$CONFIG_FILE")
-
-    ui_engine_menu_footer
-
-    local sel
-    sel="$(prompt "Selection (#/A/E/D/Q)" "")"
-
-    case "$sel" in
-      [Qq]) exit 0 ;;
-      [Aa]) do_add ;;
-      [Ee]) do_edit ;;
-      [Dd]) do_del ;;
-      '' ) ;;
-      * )
-        if [[ "$sel" =~ ^[0-9]+$ ]]; then
-          do_connect "$sel"
-        else
-          warn "Unknown selection: $sel"
-        fi
-        ;;
-    esac
-  done
 }
 
 case "$subcmd" in
-  menu) main_loop ;;
   add)  do_add ;;
   edit) do_edit "$number_arg" ;;
   del)  do_del "$number_arg" ;;

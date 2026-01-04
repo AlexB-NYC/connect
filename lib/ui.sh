@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# lib/ui.sh
 set -euo pipefail
 
 # expects: common.sh (ok/info/warn/die/prompt/confirm/trim)
@@ -18,6 +17,87 @@ ui_read_key() {
   printf "%s" "$k"
 }
 
+ui_read_action_or_number() {
+  # Reads:
+  # - single-letter command immediately (no Enter)
+  # - digits accumulate until Enter (multi-digit server numbers)
+  #
+  # Returns one of:
+  #   add | edit | del | connect | quit
+  #   connect_num:N
+  #   invalid:X
+
+  printf "Selection: " >&2
+
+  local ch=""
+  IFS= read -r -n 1 ch || true
+
+  # If user hits Enter immediately
+  if [[ -z "${ch:-}" ]]; then
+    ui_blank_line
+    printf "quit"
+    return 0
+  fi
+
+  case "$ch" in
+    [Qq])
+      ui_blank_line
+      printf "quit"
+      return 0
+      ;;
+    [Aa])
+      ui_blank_line
+      printf "add"
+      return 0
+      ;;
+    [Ee])
+      ui_blank_line
+      printf "edit"
+      return 0
+      ;;
+    [Dd])
+      ui_blank_line
+      printf "del"
+      return 0
+      ;;
+    [Cc])
+      ui_blank_line
+      printf "connect"
+      return 0
+      ;;
+    [0-9])
+      # numeric mode: accumulate digits until Enter
+      local buf="$ch"
+      while true; do
+        IFS= read -r -n 1 ch || true
+
+        # Enter ends number entry
+        if [[ -z "${ch:-}" ]]; then
+          ui_blank_line
+          printf "connect_num:%s" "$buf"
+          return 0
+        fi
+
+        # Continue accumulating digits
+        if [[ "$ch" =~ ^[0-9]$ ]]; then
+          buf+="$ch"
+          continue
+        fi
+
+        # any non-digit terminates as invalid
+        ui_blank_line
+        printf "invalid:%s" "$ch"
+        return 0
+      done
+      ;;
+    *)
+      ui_blank_line
+      printf "invalid:%s" "$ch"
+      return 0
+      ;;
+  esac
+}
+
 ui_no_servers_menu() {
   # args: config_file
   local cfg="$1"
@@ -26,16 +106,14 @@ ui_no_servers_menu() {
   ok "No servers found. Press A to add one, or Q to quit."
   ui_blank_line
   ui "Actions: [A]dd  [Q]uit"
-  printf "Selection: " >&2
 
-  local sel
-  sel="$(ui_read_key)"
-  ui_blank_line
+  local action
+  action="$(ui_read_action_or_number)"
 
-  case "${sel:-}" in
-    [Aa]) printf "add" ;;
-    [Qq]|'') printf "quit" ;;
-    *) printf "invalid" ;;
+  case "$action" in
+    add)  printf "add" ;;
+    quit) printf "quit" ;;
+    *)    printf "invalid" ;;
   esac
 }
 
@@ -118,21 +196,7 @@ ui_render_server_table() {
 
 ui_prompt_list_action() {
   ui "Actions: [C]onnect  [A]dd  [E]dit  [D]el  [Q]uit"
-  printf "Selection: " >&2
-  local sel
-  sel="$(ui_read_key)"
-  ui_blank_line
-
-  case "${sel:-}" in
-    [Cc]) printf "connect" ;;
-    [Aa]) printf "add" ;;
-    [Ee]) printf "edit" ;;
-    [Dd]) printf "del" ;;
-    [Qq]|'') printf "quit" ;;
-    *)
-      printf "invalid:%s" "$sel"
-      ;;
-  esac
+  ui_read_action_or_number
 }
 
 ui_prompt_server_number() {
@@ -155,19 +219,4 @@ ui_prompt_connect_mode() {
     ''|[Bb]) printf "both" ;;
     *) printf "invalid:%s" "$k" ;;
   esac
-}
-
-# Engine "menu" UI (simple numbered list)
-ui_engine_menu_header() {
-  # args: config_file
-  local cfg="$1"
-  ui_blank_line
-  ui "Config: $cfg"
-  ui "Servers:"
-}
-
-ui_engine_menu_footer() {
-  ui_blank_line
-  ui "[A]dd  [E]dit  [D]el  [Q]uit"
-  ui "Enter a number to connect."
 }
