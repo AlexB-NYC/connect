@@ -1,14 +1,12 @@
 # connect
 
-**`connect`** is a small CLI tool for quickly connecting to frequently used servers via SSH, with optional SSHFS mounting. It uses a simple INI-style config file and includes an interactive manager for adding, editing, and removing entries. I built this to replace tools like Putty and Mountain Duck.
+**`connect`** is a small CLI tool for quickly connecting to frequently used servers via SSH, with optional SSHFS mounting. It uses a simple INI-style config file and includes an interactive manager for adding, editing, and removing entries.
 
-> **Single Entry Point:**  
-> The only user-facing command is `connect`.  
-> Internal operations like adding/editing entries are delegated to an internal helper script: `engine`.
+Built to replace tools like Putty and Mountain Duck with pure-CLI.
 
 ---
 
-## What It Does
+## Usage
 
 ```bash
 connect <name>           # SSHFS mount (if enabled) + SSH
