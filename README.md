@@ -12,7 +12,7 @@ The user-facing entry point is always `connect`. Internally it delegates managem
 - `connect <name> --ssh`: SSH only
 - `connect <name> --fs`: SSHFS mount only
 - `connect --list`: show a numbered table and allow quick actions via single keypress
-- `connect --add|--edit|--del|--engine`: manage entries (delegates to `engine`)
+- `connect --add|--edit|--del|: manage entries (delegates to `engine`)
 
 ---
 
@@ -22,7 +22,7 @@ The user-facing entry point is always `connect`. Internally it delegates managem
 ./install.sh
 ````
 
-This project expects an `install.sh` that places `connect` on your PATH (commonly `/usr/local/bin/connect`). See that script for exact behavior.
+OR you can run it from your home space by explicitly adding path/to/connect to your PATH.
 
 ---
 
