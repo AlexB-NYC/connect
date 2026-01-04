@@ -1,149 +1,214 @@
 # connect
 
-`connect` is a small CLI tool for quickly connecting to frequently used servers via SSH, with optional SSHFS mounting.  
+**`connect`** is a small CLI tool for quickly connecting to frequently used servers via SSH, with optional SSHFS mounting.  
 It uses a simple INI-style config file and includes an interactive manager for adding, editing, and removing entries.
 
-The **only user-facing entry point is `connect`**.  
-Management actions are internally delegated to `engine`.
+> **Single Entry Point:**  
+> The only user-facing command is `connect`.  
+> Internal operations like adding/editing entries are delegated to an internal helper script: `engine`.
 
 ---
 
-## What it does
+## What It Does
 
-```text
+```bash
 connect <name>           # SSHFS mount (if enabled) + SSH
 connect <name> --ssh     # SSH only
 connect <name> --fs      # SSHFS mount only
 
-connect --list           # show table and interactively select actions
-connect --add            # add a server entry
-connect --edit           # edit a server entry
-connect --del            # delete a server entry
+connect --list           # Show table and interactively select actions
+connect --add            # Add a server entry
+connect --edit           # Edit a server entry
+connect --del            # Delete a server entry
 ```
 
-Installation
-`./install.sh`
-Or run from source by adding the project directory to your PATH.
+---
 
-Configuration
-Server definitions live in an INI-style file.
-connect searches for it in this order:
+## Installation
 
-$CONNECT_CONFIG (if set)
+```bash
+./install.sh
+```
 
-$XDG_CONFIG_HOME/connect/servers.conf
+Or run directly from source by adding the project directory to your `PATH`.
 
-$HOME/.config/connect/servers.conf
+---
 
-To force a specific config file:
+## Configuration
 
+Server definitions live in an INI-style config file.  
+`connect` searches for it in the following order:
+
+1. `$CONNECT_CONFIG` (if set)
+2. `$XDG_CONFIG_HOME/connect/servers.conf`
+3. `$HOME/.config/connect/servers.conf`
+
+To explicitly set the config path:
+
+```bash
 export CONNECT_CONFIG="$HOME/.config/connect/servers.conf"
-Example servers.conf
+```
+
+### Example `servers.conf`
+
+```ini
 [my-server]
 remote_user=ubuntu
 remote_host=203.0.113.10
 remote_path=/var/www
 mount_label=MyServer
 ssh_key=my-key.pem
-Config keys
-Required
-remote_user
+```
 
-remote_host
+### Config Keys
 
-remote_path
+**Required:**
+- `remote_user`
+- `remote_host`
+- `remote_path`
+- `mount_label`
 
-mount_label
+**Optional:**
+- `ssh_key` (filename or absolute path)
+- `mount_point`
+- `log_file`
 
-Optional
-ssh_key (filename or absolute path)
+**Notes:**
+- If `ssh_key` is not an absolute path, it resolves to `~/.ssh/<key>`.
+- SSH will still work without `ssh_key` via agent or password authentication.
 
-mount_point
+---
 
-log_file
+## Usage
 
-Notes
+### Connect by Name
 
-Non-absolute ssh_key values are resolved as ~/.ssh/<key>.
-
-If ssh_key is omitted, SSH can still work via agent or password.
-
-Usage
-Connect by name
+```bash
 connect my-server
-Default behavior: SSHFS mount, then SSH.
+```
 
-SSH only
+Default behavior: SSHFS mount (if configured), then SSH.
+
+### SSH Only
+
+```bash
 connect my-server --ssh
-SSHFS only
+```
+
+### SSHFS Only
+
+```bash
 connect my-server --fs
-Interactive list
+```
+
+---
+
+## Interactive Mode
+
+```bash
 connect --list
-Displays a table with:
+```
 
-index
+Displays a table of configured servers with:
 
-name
-
-host
-
-user
-
-key
+- Index
+- Name
+- Host
+- User
+- Key
 
 Then waits for a single keypress:
 
-Actions: [C]onnect  [A]dd  [E]dit  [D]el  [Q]uit
-Selection:
-Digits select a server (Enter confirms)
+**Actions:**
+- `[C]` Connect
+- `[A]` Add
+- `[E]` Edit
+- `[D]` Delete
+- `[Q]` Quit
 
-Enter exits
+**Selection:**
+- Digits select a server (Enter confirms)
+- `Enter` exits
+- `Ctrl+C` exits
 
-Ctrl+C exits
+When connecting, you’ll be prompted for the mode:
 
-If connecting, you’ll be prompted for mode:
+```text
+[S] SSH-only
+[F] SSHFS-only
+[B] Both (default)
+```
 
-[S]sh-only, [F]s-only, [B]oth (default)
-Management commands
-All are user-facing and delegate to engine:
+---
 
-connect --add
-connect --edit
-connect --del
-Logging
-If log_file is not set, logs default to:
+## Management Commands
 
-$XDG_CACHE_HOME/connect/connect.log
-or:
+All user-facing management commands internally delegate to `engine`:
 
-$HOME/.cache/connect/connect.log
-Mount behavior
-If mount_point is not specified:
+```bash
+connect --add     # Add a new server
+connect --edit    # Edit an existing server
+connect --del     # Delete a server
+```
 
-macOS: ~/mnt/<mount_label>
+---
 
-Linux: /media/<user>/<mount_label>
+## Logging
+
+If `log_file` is not set, logs default to:
+
+- `$XDG_CACHE_HOME/connect/connect.log`, or
+- `$HOME/.cache/connect/connect.log`
+
+---
+
+## Mount Behavior
+
+If `mount_point` is not specified:
+
+- macOS: `~/mnt/<mount_label>`
+- Linux: `/media/<user>/<mount_label>`
 
 Before mounting, any existing mount at that path is unmounted.
 
-Linux note: SSHFS with allow_other requires user_allow_other enabled in /etc/fuse.conf.
+**Linux Note:**  
+SSHFS with `allow_other` requires `user_allow_other` to be enabled in `/etc/fuse.conf`.
 
-Flags
---ssh           SSH only
---fs            SSHFS only
---list          show table and prompt
---add           add entry
---edit          edit entry
---del           delete entry
--v, --verbose   verbose SSH / SSHFS output
---insecure      disable host key checking
---debug         debug output for scripts
-Repo layout
-bin/entry        main user-facing command (connect)
-bin/engine       config management (add/edit/del)
-lib/common.sh    shared helpers
-lib/config.sh    config parsing helpers
-lib/validate.sh  validation helpers
-lib/ui.sh        interactive UI helpers
-License
-MIT
+---
+
+## Flags
+
+| Flag           | Description                             |
+|----------------|-----------------------------------------|
+| `--ssh`        | SSH only                                |
+| `--fs`         | SSHFS only                              |
+| `--list`       | Show table and interactively select     |
+| `--add`        | Add a server entry                      |
+| `--edit`       | Edit a server entry                     |
+| `--del`        | Delete a server entry                   |
+| `-v`, `--verbose` | Verbose SSH / SSHFS output           |
+| `--insecure`   | Disable SSH host key checking           |
+| `--debug`      | Debug output for internal scripts       |
+
+---
+
+## Repo Layout
+
+```text
+bin/entry         # Main user-facing command (connect)
+bin/engine        # Config management (add/edit/del)
+lib/common.sh     # Shared helpers
+lib/config.sh     # Config parsing
+lib/validate.sh   # Validation logic
+lib/ui.sh         # Interactive UI
+```
+
+---
+
+## License
+
+MIT License — see [LICENSE](./LICENSE) for details.
+
+---
+
+Made to simplify your server workflows.
