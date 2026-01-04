@@ -12,9 +12,13 @@ BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 usage() {
   cat <<'EOF' >&2
 Usage:
-  engine [menu|add|edit|del] [--config /path/to/servers.conf]
+  engine [menu|add|edit|del] [--config /path/to/servers.conf] [number]
 
 If no subcommand is provided, defaults to "menu".
+For "edit" and "del", an optional server number may be provided.
+Examples:
+  engine edit 3
+  engine del 2
 EOF
   exit 1
 }
@@ -38,6 +42,8 @@ if [[ "${1:-}" =~ ^(menu|add|edit|del)$ ]]; then
   subcmd="$1"
   shift
 fi
+
+number_arg="${1:-}"
 
 if [[ -z "$CONFIG_FILE" ]]; then
   CONFIG_FILE="$(resolve_config_file)"
@@ -129,7 +135,14 @@ do_add() {
 do_edit() {
   echo
   local choice section
-  choice="$(prompt "Edit which server number" "")"
+
+  if [[ -n "${1:-}" ]]; then
+    choice="$1"
+  else
+    choice="$(prompt "Edit which server number" "")"
+  fi
+
+  [[ "$choice" =~ ^[0-9]+$ ]] || die "Invalid selection."
   section="$(pick_server_by_number "$choice")"
   [[ -n "$section" ]] || die "Invalid selection."
 
@@ -185,7 +198,14 @@ do_edit() {
 do_del() {
   echo
   local choice section
-  choice="$(prompt "Delete which server number" "")"
+
+  if [[ -n "${1:-}" ]]; then
+    choice="$1"
+  else
+    choice="$(prompt "Delete which server number" "")"
+  fi
+
+  [[ "$choice" =~ ^[0-9]+$ ]] || die "Invalid selection."
   section="$(pick_server_by_number "$choice")"
   [[ -n "$section" ]] || die "Invalid selection."
 
@@ -237,7 +257,7 @@ main_loop() {
 case "$subcmd" in
   menu) main_loop ;;
   add)  do_add ;;
-  edit) do_edit ;;
-  del)  do_del ;;
+  edit) do_edit "$number_arg" ;;
+  del)  do_del "$number_arg" ;;
   *) usage ;;
 esac
