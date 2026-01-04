@@ -94,3 +94,28 @@ valid_section_name() {
   [[ "$name" != *[[:space:]]* ]] || return 1
   return 0
 }
+
+normalize_mount_point() {
+  # normalize_mount_point "<os>" "<mount_point>" "<mount_label>"
+  local os="$1"
+  local mp="${2:-}"
+  local label="${3:-}"
+
+  # If blank, caller will apply default based on label
+  [[ -z "$mp" ]] && { echo ""; return; }
+
+  mp="$(expand_tilde "$mp")"
+
+  # If already absolute, keep it
+  if [[ "$mp" == /* ]]; then
+    echo "$mp"
+    return
+  fi
+
+  # Otherwise treat it as a folder name under the OS default base
+  if [[ "$os" == "mac" ]]; then
+    echo "$HOME/mnt/$mp"
+  else
+    echo "/media/$USER/$mp"
+  fi
+}

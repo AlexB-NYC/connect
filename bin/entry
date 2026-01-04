@@ -246,6 +246,11 @@ log_file="$(config_get "$CONFIG_FILE" "$server" log_file)"
 ssh_key="$(normalize_key_path "$ssh_key")"
 os="$(os_family)"
 
+# If mount_point exists but is not absolute, interpret it as a folder name
+# under the OS default base (Linux: /media/$USER, macOS: $HOME/mnt).
+mount_point="$(normalize_mount_point "$os" "${mount_point:-}" "$mount_label")"
+
+# If mount_point still blank, default to mount_label
 if [[ -z "${mount_point:-}" ]]; then
   if [[ "$os" == "mac" ]]; then
     mount_point="$HOME/mnt/$mount_label"
@@ -253,6 +258,7 @@ if [[ -z "${mount_point:-}" ]]; then
     mount_point="/media/$USER/$mount_label"
   fi
 fi
+
 
 if [[ -z "${log_file:-}" ]]; then
   log_file="${XDG_CACHE_HOME:-$HOME/.cache}/connect/connect.log"
