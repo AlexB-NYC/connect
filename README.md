@@ -19,8 +19,10 @@ connect --list           # show table and interactively select actions
 connect --add            # add a server entry
 connect --edit           # edit a server entry
 connect --del            # delete a server entry
+```
+
 Installation
-./install.sh
+`./install.sh`
 Or run from source by adding the project directory to your PATH.
 
 Configuration
