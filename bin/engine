@@ -101,6 +101,62 @@ _trace_config_perms() {
   [[ -n "$out" ]] && info "$out"
 }
 
+# ---- ssh key input + validation (reprompt loop) ----
+
+_key_perm_string() {
+  # best-effort permission string like: -rw-------
+  # empty if unavailable
+  local key_path="$1"
+  ls -l "$key_path" 2>/dev/null | awk '{print $1}'
+}
+
+_key_perm_strict_ok() {
+  # require group/other to be ---
+  local perm="$1"
+  [[ -n "$perm" ]] || return 0  # if we can't read perms, don't block
+  local group="${perm:4:3}"
+  local other="${perm:7:3}"
+  [[ "$group" == "---" && "$other" == "---" ]]
+}
+
+prompt_ssh_key_validated() {
+  # args: prompt_text default_value
+  # returns: prints the user-entered value (original text, not normalized)
+  local prompt_text="$1"
+  local def="${2:-}"
+  local ssh_key key_path perm
+
+  while true; do
+    ssh_key="$(prompt "$prompt_text" "$def")"
+
+    # blank is allowed (means "no key" / "remove key")
+    if [[ -z "$ssh_key" ]]; then
+      printf "%s" ""
+      return 0
+    fi
+
+    key_path="$(normalize_key_path "$ssh_key")"
+
+    if [[ ! -f "$key_path" ]]; then
+      ok "Key not found: $key_path"
+      ok "Ctrl+C to exit"
+      def="$ssh_key"
+      continue
+    fi
+
+    perm="$(_key_perm_string "$key_path")"
+    if ! _key_perm_strict_ok "$perm"; then
+      ok "Incorrect key permissions ($perm). Recommended: chmod 600 '$key_path'"
+      ok "Ctrl+C to exit"
+      def="$ssh_key"
+      continue
+    fi
+
+    printf "%s" "$ssh_key"
+    return 0
+  done
+}
+
 do_add() {
   ui_blank_line
   ui "Add a server entry"
@@ -122,7 +178,7 @@ do_add() {
   remote_host="$(prompt "remote_host" "")"
   remote_path="$(prompt "remote_path" "/")"
   mount_label="$(prompt "mount_label" "")"
-  ssh_key="$(prompt "ssh_key (optional, filename or path)" "")"
+  ssh_key="$(prompt_ssh_key_validated "ssh_key (optional, filename or path)" "")"
   mount_point="$(prompt "mount_point (optional)" "")"
   log_file="$(prompt "log_file (optional)" "")"
 
@@ -242,7 +298,7 @@ do_edit() {
   remote_host="$(prompt "remote_host" "$cur_remote_host")"
   remote_path="$(prompt "remote_path" "${cur_remote_path:-/}")"
   mount_label="$(prompt "mount_label" "$cur_mount_label")"
-  ssh_key="$(prompt "ssh_key (optional, blank to remove)" "${cur_ssh_key:-}")"
+  ssh_key="$(prompt_ssh_key_validated "ssh_key (optional, blank to remove)" "${cur_ssh_key:-}")"
   mount_point="$(prompt "mount_point (optional, blank to remove)" "${cur_mount_point:-}")"
   log_file="$(prompt "log_file (optional, blank to remove)" "${cur_log_file:-}")"
 
