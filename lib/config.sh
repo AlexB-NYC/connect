@@ -20,7 +20,10 @@ list_servers() {
 section_exists() {
   local cfg="$1" section="$2"
   [[ -r "$cfg" ]] || die "Config file not readable: $cfg"
-  awk -v s="[$section]" '$0==s{found=1} END{exit(found?0:1)}' "$cfg"
+  awk -v s="[$section]" '
+    $0==s {found=1}
+    END {exit(found?0:1)}
+  ' "$cfg"
 }
 
 config_get() {
