@@ -2,7 +2,7 @@
 
 **`connect`** is a small CLI tool for quickly connecting to frequently used servers via SSH, with optional SSHFS mounting. It uses a simple INI-style config file and includes an interactive manager for adding, editing, and removing entries.
 
-Built to replace tools like Putty and Mountain Duck with pure-CLI.
+Built to replace tools like Putty and Mountain Duck with pure-CLI. Currently works on Ubuntu and MacOS.
 
 ---
 
