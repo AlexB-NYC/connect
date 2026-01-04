@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bin/engine
+# bin/engine (internal; intended to be called by bin/entry)
 set -euo pipefail
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -9,41 +9,52 @@ BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$BASE_DIR/lib/config.sh"
 # shellcheck source=../lib/validate.sh
 . "$BASE_DIR/lib/validate.sh"
+# shellcheck source=../lib/ui.sh
+. "$BASE_DIR/lib/ui.sh"
 
-usage() {
-  cat <<'EOF' >&2
-Usage:
-  engine [menu|add|edit|del] [--config /path/to/servers.conf] [number]
+# ---- internal arg parsing ----
+# Accept: --debug, --config <path>, then subcmd, then optional number
+CONFIG_FILE=""
 
-If no subcommand is provided, defaults to "menu".
-For "edit" and "del", an optional server number may be provided.
-Examples:
-  engine edit 3
-  engine del 2
-EOF
-  exit 1
+parse_flags() {
+  while (( $# )); do
+    case "$1" in
+      --debug)
+        export CONNECT_DEBUG=1
+        shift
+        ;;
+      --config)
+        shift
+        [[ $# -gt 0 ]] || die "engine: missing value for --config"
+        CONFIG_FILE="$1"
+        shift
+        ;;
+      -h|--help)
+        die "engine: help is not available (use connect --help)"
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  # return remaining args via echo (caller captures into array)
+  printf "%s\n" "$@"
 }
 
-# ---- arg parsing ----
-CONFIG_FILE=""
-while (( $# )); do
-  case "$1" in
-    --config)
-      shift
-      [[ $# -gt 0 ]] || usage
-      CONFIG_FILE="$1"
-      shift
-      ;;
-    -h|--help) usage ;;
-    *) break ;;
-  esac
-done
+# Pass 1: flags before subcmd
+mapfile -t _rest < <(parse_flags "$@")
+set -- "${_rest[@]}"
 
 subcmd="menu"
 if [[ "${1:-}" =~ ^(menu|add|edit|del)$ ]]; then
   subcmd="$1"
   shift
 fi
+
+# Pass 2: flags after subcmd
+mapfile -t _rest < <(parse_flags "$@")
+set -- "${_rest[@]}"
 
 number_arg="${1:-}"
 
@@ -65,39 +76,34 @@ pick_server_by_number() {
   local i=1 line
   while IFS= read -r line; do
     if [[ "$i" == "$choice" ]]; then
-      echo "$line"
+      printf "%s" "$line"
       return 0
     fi
     i=$((i+1))
   done < <(list_servers "$CONFIG_FILE")
-  echo ""
-}
-
-print_servers() {
-  echo
-  echo "Config: $CONFIG_FILE"
-  echo "Servers:"
-  local i=1 line
-  while IFS= read -r line; do
-    printf "  %2d) %s\n" "$i" "$line"
-    i=$((i+1))
-  done < <(list_servers "$CONFIG_FILE")
-  echo
-  echo "[A]dd  [E]dit  [D]el  [Q]uit"
-  echo "Enter a number to connect."
+  printf "%s" ""
 }
 
 _trace_config_perms() {
-  # keep this lightweight and only called in add/edit flows
+  debug_enabled || return 0
+
   local cfg="$1"
   info "engine: trace perms for $cfg"
-  ls -ld "$(dirname "$cfg")" 2>/dev/null || true
-  ls -l "$cfg" 2>/dev/null || true
+
+  local d f out
+  d="$(dirname "$cfg")"
+  f="$cfg"
+
+  out="$(ls -ld "$d" 2>/dev/null || true)"
+  [[ -n "$out" ]] && info "$out"
+
+  out="$(ls -l "$f" 2>/dev/null || true)"
+  [[ -n "$out" ]] && info "$out"
 }
 
 do_add() {
-  echo
-  echo "Add a server entry"
+  ui_blank_line
+  ui "Add a server entry"
   info "engine:add: begin"
   info "engine:add: CONFIG_FILE=$CONFIG_FILE"
   _trace_config_perms "$CONFIG_FILE"
@@ -141,7 +147,7 @@ do_add() {
 
     info "Testing SSH connectivity (secure defaults)."
     if test_ssh_connection "$remote_user" "$remote_host" "$key_path" 0 0; then
-      info "SSH test succeeded."
+      ok "SSH test succeeded."
       info "engine:add: SSH test returned success; continuing to save…"
     else
       warn "SSH test failed."
@@ -155,33 +161,32 @@ do_add() {
     info "engine:add: SSH test skipped by user"
   fi
 
-info "engine:add: Preparing to build config block"
+  info "engine:add: Preparing to build config block"
 
-if ! declare -F build_section_block >/dev/null 2>&1; then
-  die "engine:add: build_section_block() is NOT defined (config.sh not loaded as expected)"
-fi
-info "engine:add: build_section_block() is defined; calling it now"
+  if ! declare -F build_section_block >/dev/null 2>&1; then
+    die "engine:add: build_section_block() is NOT defined (config.sh not loaded as expected)"
+  fi
+  info "engine:add: build_section_block() is defined; calling it now"
 
-local block rc
-block=""
+  local block rc
+  block=""
 
-# run WITHOUT letting set -e kill us before we can report
-set +e
-block="$(build_section_block "$section" "$remote_user" "$remote_host" "$remote_path" "$mount_label" "$ssh_key" "$mount_point" "$log_file" 2>&1)"
-rc=$?
-set -e
+  set +e
+  block="$(build_section_block "$section" "$remote_user" "$remote_host" "$remote_path" "$mount_label" "$ssh_key" "$mount_point" "$log_file" 2>&1)"
+  rc=$?
+  set -e
 
-if (( rc != 0 )); then
-  warn "engine:add: build_section_block failed (rc=$rc)"
-  warn "engine:add: build_section_block output was:"
-  printf '%s\n' "$block" >&2
-  warn "engine:add: build_section_block definition is:"
-  declare -f build_section_block >&2
-  die "engine:add: aborting before append_section"
-fi
+  if (( rc != 0 )); then
+    warn "engine:add: build_section_block failed (rc=$rc)"
+    warn "engine:add: build_section_block output was:"
+    printf '%s\n' "$block" >&2
+    warn "engine:add: build_section_block definition is:"
+    declare -f build_section_block >&2
+    die "engine:add: aborting before append_section"
+  fi
 
-info "engine:add: build_section_block returned successfully"
-info "engine:add: block bytes=$(printf '%s' "$block" | wc -c)"
+  info "engine:add: build_section_block returned successfully"
+  info "engine:add: block bytes=$(printf '%s' "$block" | wc -c)"
 
   info "engine:add: Preparing to update file"
   info "engine:add: Saving file at $CONFIG_FILE"
@@ -199,19 +204,18 @@ info "engine:add: block bytes=$(printf '%s' "$block" | wc -c)"
   info "engine:add: file size after append: ${after} bytes"
   _trace_config_perms "$CONFIG_FILE"
 
+  ok "Server data saved."
   info "Saved [$section]."
   info "engine:add: end"
 }
 
-
 do_edit() {
-  echo
-  local choice section
-
+  ui_blank_line
   info "engine:edit: begin"
   info "engine:edit: CONFIG_FILE=$CONFIG_FILE"
   _trace_config_perms "$CONFIG_FILE"
 
+  local choice section
   if [[ -n "${1:-}" ]]; then
     choice="$1"
   else
@@ -222,7 +226,7 @@ do_edit() {
   section="$(pick_server_by_number "$choice")"
   [[ -n "$section" ]] || die "Invalid selection."
 
-  echo "Editing [$section]"
+  ui "Editing [$section]"
 
   local cur_remote_user cur_remote_host cur_remote_path cur_mount_label cur_ssh_key cur_mount_point cur_log_file
   cur_remote_user="$(config_get "$CONFIG_FILE" "$section" remote_user)"
@@ -259,7 +263,7 @@ do_edit() {
 
     info "Testing SSH connectivity (secure defaults)."
     if test_ssh_connection "$remote_user" "$remote_host" "$key_path" 0 0; then
-      info "SSH test succeeded."
+      ok "SSH test succeeded."
       info "engine:edit: continuing to save…"
     else
       warn "SSH test failed."
@@ -279,18 +283,18 @@ do_edit() {
   replace_section "$CONFIG_FILE" "$section" "$block"
   _trace_config_perms "$CONFIG_FILE"
 
+  ok "Server data saved."
   info "Updated [$section]."
   info "engine:edit: end"
 }
 
 do_del() {
-  echo
-  local choice section
-
+  ui_blank_line
   info "engine:del: begin"
   info "engine:del: CONFIG_FILE=$CONFIG_FILE"
   _trace_config_perms "$CONFIG_FILE"
 
+  local choice section
   if [[ -n "${1:-}" ]]; then
     choice="$1"
   else
@@ -301,10 +305,10 @@ do_del() {
   section="$(pick_server_by_number "$choice")"
   [[ -n "$section" ]] || die "Invalid selection."
 
-  echo
-  echo "You are about to delete [$section] from:"
-  echo "  $CONFIG_FILE"
-  echo
+  ui_blank_line
+  ui "You are about to delete [$section] from:"
+  ui "  $CONFIG_FILE"
+  ui_blank_line
 
   local confirm_name
   confirm_name="$(prompt "Type the server name to confirm" "")"
@@ -316,6 +320,7 @@ do_del() {
   delete_section "$CONFIG_FILE" "$section"
   _trace_config_perms "$CONFIG_FILE"
 
+  ok "Server deleted."
   info "Deleted [$section]."
   info "engine:del: end"
 }
@@ -330,9 +335,19 @@ do_connect() {
 
 main_loop() {
   while true; do
-    print_servers
+    ui_engine_menu_header "$CONFIG_FILE"
+
+    local i=1 line
+    while IFS= read -r line; do
+      printf "  %2d) %s\n" "$i" "$line" >&2
+      i=$((i+1))
+    done < <(list_servers "$CONFIG_FILE")
+
+    ui_engine_menu_footer
+
     local sel
     sel="$(prompt "Selection (#/A/E/D/Q)" "")"
+
     case "$sel" in
       [Qq]) exit 0 ;;
       [Aa]) do_add ;;
@@ -355,5 +370,5 @@ case "$subcmd" in
   add)  do_add ;;
   edit) do_edit "$number_arg" ;;
   del)  do_del "$number_arg" ;;
-  *) usage ;;
+  *) die "engine: invalid args (called by entry)" ;;
 esac

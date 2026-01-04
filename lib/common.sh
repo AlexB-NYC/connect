@@ -3,6 +3,11 @@
 
 set -euo pipefail
 
+debug_enabled() {
+  # Enabled if CONNECT_DEBUG is set to a non-empty, non-zero value
+  [[ -n "${CONNECT_DEBUG:-}" && "${CONNECT_DEBUG:-0}" != "0" ]]
+}
+
 die() {
   echo "ERROR: $*" >&2
   exit 1
@@ -13,8 +18,14 @@ warn() {
 }
 
 info() {
-  echo "INFO: $*" >&2
+  # informational / tracing output (debug-only)
+  if debug_enabled; then
+    echo "INFO: $*" >&2
+  fi
 }
+
+ok() { echo "$*" >&2; }
+
 
 trim() {
   local s="$1"
@@ -93,4 +104,29 @@ valid_section_name() {
   [[ "$name" != *"["* && "$name" != *"]"* ]] || return 1
   [[ "$name" != *[[:space:]]* ]] || return 1
   return 0
+}
+
+normalize_mount_point() {
+  # normalize_mount_point "<os>" "<mount_point>" "<mount_label>"
+  local os="$1"
+  local mp="${2:-}"
+  local label="${3:-}"
+
+  # If blank, caller will apply default based on label
+  [[ -z "$mp" ]] && { echo ""; return; }
+
+  mp="$(expand_tilde "$mp")"
+
+  # If already absolute, keep it
+  if [[ "$mp" == /* ]]; then
+    echo "$mp"
+    return
+  fi
+
+  # Otherwise treat it as a folder name under the OS default base
+  if [[ "$os" == "mac" ]]; then
+    echo "$HOME/mnt/$mp"
+  else
+    echo "/media/$USER/$mp"
+  fi
 }

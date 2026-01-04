@@ -1,5 +1,5 @@
-# bin/entry
 #!/usr/bin/env bash
+# bin/entry
 set -euo pipefail
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -7,13 +7,15 @@ BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$BASE_DIR/lib/common.sh"
 # shellcheck source=../lib/config.sh
 . "$BASE_DIR/lib/config.sh"
+# shellcheck source=../lib/ui.sh
+. "$BASE_DIR/lib/ui.sh"
 
 usage() {
   cat <<'EOF' >&2
 Usage:
-  connect <servername> [--ssh | --fs] [-v|--verbose] [--insecure]
-  connect --list
-  connect [--add | --edit | --del]
+  connect <servername> [--ssh | --fs] [-v|--verbose] [--insecure] [--debug]
+  connect --list [--debug]
+  connect [--add | --edit | --del] [--debug]
 
 Modes (mutually exclusive):
   --ssh           only SSH (no sshfs)
@@ -23,6 +25,7 @@ Options:
   --list          list configured servers (table) and prompt for action
   -v, --verbose   verbose output (ssh -vvv, sshfs_debug)
   --insecure      disable host key checking (not recommended)
+  --debug         debug output for connect scripts (engine/entry/libs)
 
 Engine:
   --add           add server entry (delegates to engine)
@@ -37,6 +40,7 @@ mode="both"      # both|ssh|fs
 verbose=0
 insecure=0
 do_list=0
+debug=0
 engine_action="" # add|edit|del
 
 while (( $# )); do
@@ -51,6 +55,8 @@ while (( $# )); do
     --edit) engine_action="edit"; shift ;;
     --del)  engine_action="del"; shift ;;
 
+    --debug) debug=1; shift ;;
+
     -h|--help) usage ;;
     -* ) usage ;;
     *)
@@ -63,9 +69,16 @@ while (( $# )); do
   esac
 done
 
+if (( debug )); then
+  export CONNECT_DEBUG=1
+fi
+
+engine_args=()
+(( debug )) && engine_args+=(--debug)
+
 # Delegate to engine for management functions
 if [[ -n "$engine_action" ]]; then
-  exec "$BASE_DIR/bin/engine" "$engine_action"
+  exec "$BASE_DIR/bin/engine" "${engine_args[@]}" "$engine_action"
 fi
 
 CONFIG_FILE="$(resolve_config_file)"
@@ -76,13 +89,12 @@ if [[ ! -e "$CONFIG_FILE" ]]; then
   : > "$CONFIG_FILE" 2>/dev/null || true
 fi
 
-print_list_table_and_prompt() {
-  [[ -r "$CONFIG_FILE" ]] || die "Config file not readable: $CONFIG_FILE"
-
-  local servers=()
-  local hosts=()
-  local users=()
-  local keys=()
+collect_server_rows() {
+  # outputs globals: servers hosts users keys
+  servers=()
+  hosts=()
+  users=()
+  keys=()
 
   local s i=0
   while IFS= read -r s; do
@@ -93,127 +105,71 @@ print_list_table_and_prompt() {
     keys[i]="$(config_get "$CONFIG_FILE" "$s" ssh_key || true)"
     i=$((i+1))
   done < <(list_servers "$CONFIG_FILE")
+}
+
+print_list_table_and_prompt() {
+  [[ -r "$CONFIG_FILE" ]] || die "Config file not readable: $CONFIG_FILE"
+
+  local -a servers hosts users keys
+  collect_server_rows
 
   local count="${#servers[@]}"
+
+  # Empty config: only A/Q are valid.
   if (( count == 0 )); then
-    echo "No servers found in: $CONFIG_FILE" >&2
-    echo "No servers found. Press A to add one, or run: connect --add" >&2
+    local action
+    action="$(ui_no_servers_menu "$CONFIG_FILE")"
+    case "$action" in
+      add)  exec "$BASE_DIR/bin/engine" "${engine_args[@]}" add ;;
+      quit) exit 0 ;;
+      *)    die "No servers configured. Choose A to add or Q to quit." ;;
+    esac
   fi
 
-  local max_idx=1 max_name=4 max_host=4 max_user=4 max_key=3
-  local n idx_len name_len host_len user_len key_len
+  ui_render_server_table "${servers[@]}" -- "${hosts[@]}" -- "${users[@]}" -- "${keys[@]}"
 
-  for ((i=0; i<count; i++)); do
-    n=$((i+1))
+  local action
+  action="$(ui_prompt_list_action)"
 
-    idx_len="${#n}"
-    name_len="${#servers[i]}"
-    host_len="${#hosts[i]}"
-    user_len="${#users[i]}"
-    key_len="${#keys[i]}"
+  case "$action" in
+    quit) exit 0 ;;
+    add)  exec "$BASE_DIR/bin/engine" "${engine_args[@]}" add ;;
+    invalid:*) die "Unknown selection: ${action#invalid:}" ;;
+  esac
 
-    (( idx_len > max_idx )) && max_idx="$idx_len"
-    (( name_len > max_name )) && max_name="$name_len"
-    (( host_len > max_host )) && max_host="$host_len"
-    (( user_len > max_user )) && max_user="$user_len"
-    (( key_len > max_key )) && max_key="$key_len"
-  done
-
-  line() {
-    local a="$1" b="$2" c="$3" d="$4" e="$5"
-    printf "+-%-*s-+-%-*s-+-%-*s-+-%-*s-+-%-*s-+\n" \
-      "$a" "" "$b" "" "$c" "" "$d" "" "$e" ""
-  }
-
-  line "$max_idx" "$max_name" "$max_host" "$max_user" "$max_key"
-  printf "| %*s | %-*s | %-*s | %-*s | %-*s |\n" \
-    "$max_idx" "#" \
-    "$max_name" "name" \
-    "$max_host" "host" \
-    "$max_user" "user" \
-    "$max_key" "key"
-  line "$max_idx" "$max_name" "$max_host" "$max_user" "$max_key"
-
-  for ((i=0; i<count; i++)); do
-    n=$((i+1))
-    printf "| %*d | %-*s | %-*s | %-*s | %-*s |\n" \
-      "$max_idx" "$n" \
-      "$max_name" "${servers[i]}" \
-      "$max_host" "${hosts[i]}" \
-      "$max_user" "${users[i]}" \
-      "$max_key" "${keys[i]}"
-  done
-
-  line "$max_idx" "$max_name" "$max_host" "$max_user" "$max_key"
-  echo >&2
-  echo "Actions: [C]onnect  [A]dd  [E]dit  [D]el  [Q]uit" >&2
-
-  local sel num selection_prompt
+  local num selection_prompt
   selection_prompt="Enter server number"
 
-  printf "Selection: " >&2
-  IFS= read -r -n 1 sel || true
-  echo >&2
-
-  [[ -n "$sel" ]] || exit 0
-
-  case "$sel" in
-    [Qq])
-      exit 0
-      ;;
-    [Aa])
-      exec "$BASE_DIR/bin/engine" add
-      ;;
-    [Ee])
-      num="$(prompt "[EDIT] $selection_prompt" "")"
-      ;;
-    [Dd])
-      num="$(prompt "[DELETE] $selection_prompt" "")"
-      ;;
-    [Cc])
-      num="$(prompt "[CONNECT] $selection_prompt" "")"
-      ;;
-    [0-9])
-      num="$(prompt "$selection_prompt" "$sel")"
-      ;;
-    *)
-      die "Unknown selection: $sel"
-      ;;
+  case "$action" in
+    edit)    num="$(ui_prompt_server_number "[EDIT] $selection_prompt" "")" ;;
+    del)     num="$(ui_prompt_server_number "[DELETE] $selection_prompt" "")" ;;
+    connect) num="$(ui_prompt_server_number "[CONNECT] $selection_prompt" "")" ;;
+    *) die "Internal: unexpected action: $action" ;;
   esac
 
   [[ "${num:-}" =~ ^[0-9]+$ ]] || die "Invalid number."
   (( num >= 1 && num <= count )) || die "Number out of range."
 
-  case "$sel" in
-    [Ee])
-      exec "$BASE_DIR/bin/engine" edit "$num"
-      ;;
-    [Dd])
-      exec "$BASE_DIR/bin/engine" del "$num"
-      ;;
-    *)
-      local mode_key mode_flag
-      mode_flag=""
-
-      echo "[S]sh-only, [F]s-only, [B]oth (default)" >&2
-      printf "Mode: " >&2
-      IFS= read -r -n 1 mode_key || true
-      echo >&2
-
-      case "${mode_key:-}" in
-        ''|[Bb]) mode_flag="" ;;
-        [Ss])    mode_flag="--ssh" ;;
-        [Ff])    mode_flag="--fs" ;;
-        *)
-          die "Unknown mode selection: $mode_key"
-          ;;
+  case "$action" in
+    edit) exec "$BASE_DIR/bin/engine" "${engine_args[@]}" edit "$num" ;;
+    del)  exec "$BASE_DIR/bin/engine" "${engine_args[@]}" del "$num" ;;
+    connect)
+      local mode_choice
+      mode_choice="$(ui_prompt_connect_mode)"
+      case "$mode_choice" in
+        invalid:*) die "Unknown mode selection: ${mode_choice#invalid:}" ;;
       esac
 
-      if [[ -n "$mode_flag" ]]; then
-        exec "$BASE_DIR/bin/entry" "${servers[num-1]}" "$mode_flag"
-      else
-        exec "$BASE_DIR/bin/entry" "${servers[num-1]}"
-      fi
+      local -a reexec_args=()
+      reexec_args+=("${servers[num-1]}")
+      case "$mode_choice" in
+        ssh) reexec_args+=(--ssh) ;;
+        fs)  reexec_args+=(--fs) ;;
+        both) : ;;
+      esac
+      (( debug )) && reexec_args+=(--debug)
+
+      exec "$BASE_DIR/bin/entry" "${reexec_args[@]}"
       ;;
   esac
 }
@@ -225,7 +181,7 @@ fi
 
 # If no server specified, drop into interactive menu
 if [[ -z "$server" ]]; then
-  exec "$BASE_DIR/bin/engine" menu
+  exec "$BASE_DIR/bin/engine" "${engine_args[@]}" menu
 fi
 
 section_exists "$CONFIG_FILE" "$server" || die "Server not found in config: [$server]"
@@ -246,6 +202,8 @@ log_file="$(config_get "$CONFIG_FILE" "$server" log_file)"
 ssh_key="$(normalize_key_path "$ssh_key")"
 os="$(os_family)"
 
+mount_point="$(normalize_mount_point "$os" "${mount_point:-}" "$mount_label")"
+
 if [[ -z "${mount_point:-}" ]]; then
   if [[ "$os" == "mac" ]]; then
     mount_point="$HOME/mnt/$mount_label"
@@ -261,6 +219,7 @@ fi
 mkdir -p "$mount_point" "$(dirname "$log_file")"
 
 log() {
+  # log is “status+logfile”; keep as-is for now
   echo "[$(date +'%F %T')] $*" | tee -a "$log_file" >&2
 }
 
