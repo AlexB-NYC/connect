@@ -1,5 +1,5 @@
-# bin/engine
 #!/usr/bin/env bash
+# bin/engine
 set -euo pipefail
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,6 +24,7 @@ EOF
   exit 1
 }
 
+# ---- arg parsing ----
 CONFIG_FILE=""
 while (( $# )); do
   case "$1" in
@@ -49,11 +50,14 @@ number_arg="${1:-}"
 if [[ -z "$CONFIG_FILE" ]]; then
   CONFIG_FILE="$(resolve_config_file)"
 fi
+info "engine: using CONFIG_FILE=$CONFIG_FILE"
 
 if [[ ! -e "$CONFIG_FILE" ]]; then
+  info "engine: config does not exist yet; creating: $CONFIG_FILE"
   mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true
   : > "$CONFIG_FILE" || die "Cannot create config file: $CONFIG_FILE"
 fi
+
 [[ -r "$CONFIG_FILE" ]] || die "Config file not readable: $CONFIG_FILE"
 
 pick_server_by_number() {
@@ -83,12 +87,24 @@ print_servers() {
   echo "Enter a number to connect."
 }
 
+_trace_config_perms() {
+  # keep this lightweight and only called in add/edit flows
+  local cfg="$1"
+  info "engine: trace perms for $cfg"
+  ls -ld "$(dirname "$cfg")" 2>/dev/null || true
+  ls -l "$cfg" 2>/dev/null || true
+}
+
 do_add() {
   echo
   echo "Add a server entry"
+  info "engine:add: begin"
+  info "engine:add: CONFIG_FILE=$CONFIG_FILE"
+  _trace_config_perms "$CONFIG_FILE"
 
   local section
   section="$(prompt "Server name (section header)" "")"
+  info "engine:add: section='$section'"
   valid_section_name "$section" || die "Invalid server name. Avoid spaces and [ ] characters."
 
   if section_exists "$CONFIG_FILE" "$section"; then
@@ -104,38 +120,97 @@ do_add() {
   mount_point="$(prompt "mount_point (optional)" "")"
   log_file="$(prompt "log_file (optional)" "")"
 
+  info "engine:add: collected fields user='$remote_user' host='$remote_host' path='$remote_path' label='$mount_label' key='$ssh_key' mp='$mount_point' log='$log_file'"
+
   [[ -n "$remote_user" ]] || die "remote_user required"
   [[ -n "$remote_host" ]] || die "remote_host required"
   [[ -n "$remote_path" ]] || die "remote_path required"
   [[ -n "$mount_label" ]] || die "mount_label required"
 
   if confirm "Test connectivity and key before saving?"; then
+    info "engine:add: user requested SSH test"
     local key_path
     key_path="$(normalize_key_path "$ssh_key")"
+    info "engine:add: normalized key_path='$key_path'"
+
     if [[ -n "$key_path" ]]; then
+      info "engine:add: checking key file"
       check_key_file "$key_path"
+      info "engine:add: key file OK"
     fi
 
     info "Testing SSH connectivity (secure defaults)."
     if test_ssh_connection "$remote_user" "$remote_host" "$key_path" 0 0; then
       info "SSH test succeeded."
+      info "engine:add: SSH test returned success; continuing to save…"
     else
       warn "SSH test failed."
+      info "engine:add: SSH test returned failure"
       if ! confirm "Save anyway?"; then
         die "Aborted."
       fi
+      info "engine:add: user chose to save anyway after failure"
     fi
+  else
+    info "engine:add: SSH test skipped by user"
   fi
 
-  local block
-  block="$(build_section_block "$section" "$remote_user" "$remote_host" "$remote_path" "$mount_label" "$ssh_key" "$mount_point" "$log_file")"
-  append_section "$CONFIG_FILE" "$section" "$block"
+info "engine:add: Preparing to build config block"
+
+if ! declare -F build_section_block >/dev/null 2>&1; then
+  die "engine:add: build_section_block() is NOT defined (config.sh not loaded as expected)"
+fi
+info "engine:add: build_section_block() is defined; calling it now"
+
+local block rc
+block=""
+
+# run WITHOUT letting set -e kill us before we can report
+set +e
+block="$(build_section_block "$section" "$remote_user" "$remote_host" "$remote_path" "$mount_label" "$ssh_key" "$mount_point" "$log_file" 2>&1)"
+rc=$?
+set -e
+
+if (( rc != 0 )); then
+  warn "engine:add: build_section_block failed (rc=$rc)"
+  warn "engine:add: build_section_block output was:"
+  printf '%s\n' "$block" >&2
+  warn "engine:add: build_section_block definition is:"
+  declare -f build_section_block >&2
+  die "engine:add: aborting before append_section"
+fi
+
+info "engine:add: build_section_block returned successfully"
+info "engine:add: block bytes=$(printf '%s' "$block" | wc -c)"
+
+  info "engine:add: Preparing to update file"
+  info "engine:add: Saving file at $CONFIG_FILE"
+
+  local before after
+  before="$(wc -c < "$CONFIG_FILE" 2>/dev/null || echo 0)"
+  info "engine:add: file size before append: ${before} bytes"
+
+  if ! append_section "$CONFIG_FILE" "$section" "$block"; then
+    rc=$?
+    die "engine:add: append_section failed (rc=$rc)"
+  fi
+
+  after="$(wc -c < "$CONFIG_FILE" 2>/dev/null || echo 0)"
+  info "engine:add: file size after append: ${after} bytes"
+  _trace_config_perms "$CONFIG_FILE"
+
   info "Saved [$section]."
+  info "engine:add: end"
 }
+
 
 do_edit() {
   echo
   local choice section
+
+  info "engine:edit: begin"
+  info "engine:edit: CONFIG_FILE=$CONFIG_FILE"
+  _trace_config_perms "$CONFIG_FILE"
 
   if [[ -n "${1:-}" ]]; then
     choice="$1"
@@ -173,8 +248,11 @@ do_edit() {
   [[ -n "$mount_label" ]] || die "mount_label required"
 
   if confirm "Test connectivity and key now?"; then
+    info "engine:edit: user requested SSH test"
     local key_path
     key_path="$(normalize_key_path "$ssh_key")"
+    info "engine:edit: normalized key_path='$key_path'"
+
     if [[ -n "$key_path" ]]; then
       check_key_file "$key_path"
     fi
@@ -182,6 +260,7 @@ do_edit() {
     info "Testing SSH connectivity (secure defaults)."
     if test_ssh_connection "$remote_user" "$remote_host" "$key_path" 0 0; then
       info "SSH test succeeded."
+      info "engine:edit: continuing to save…"
     else
       warn "SSH test failed."
       if ! confirm "Save anyway?"; then
@@ -190,15 +269,27 @@ do_edit() {
     fi
   fi
 
+  info "engine:edit: Preparing to build config block"
   local block
   block="$(build_section_block "$section" "$remote_user" "$remote_host" "$remote_path" "$mount_label" "$ssh_key" "$mount_point" "$log_file")"
+
+  info "engine:edit: Preparing to update file"
+  info "engine:edit: Saving file at $CONFIG_FILE"
+
   replace_section "$CONFIG_FILE" "$section" "$block"
+  _trace_config_perms "$CONFIG_FILE"
+
   info "Updated [$section]."
+  info "engine:edit: end"
 }
 
 do_del() {
   echo
   local choice section
+
+  info "engine:del: begin"
+  info "engine:del: CONFIG_FILE=$CONFIG_FILE"
+  _trace_config_perms "$CONFIG_FILE"
 
   if [[ -n "${1:-}" ]]; then
     choice="$1"
@@ -221,8 +312,12 @@ do_del() {
     die "Confirmation did not match. Aborted."
   fi
 
+  info "engine:del: deleting section [$section]"
   delete_section "$CONFIG_FILE" "$section"
+  _trace_config_perms "$CONFIG_FILE"
+
   info "Deleted [$section]."
+  info "engine:del: end"
 }
 
 do_connect() {

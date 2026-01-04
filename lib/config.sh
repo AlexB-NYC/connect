@@ -1,15 +1,13 @@
+# /lib/config.sh
 #!/usr/bin/env bash
 set -euo pipefail
 
 # expects: lib/common.sh sourced by caller
 
 resolve_config_file() {
-  local cfg="${CONNECT_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/connect/servers.conf}"
-  if [[ ! -f "$cfg" && -f /etc/connect/servers.conf ]]; then
-    cfg="/etc/connect/servers.conf"
-  fi
-  echo "$cfg"
+  echo "${CONNECT_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/connect/servers.conf}"
 }
+
 
 list_servers() {
   local cfg="$1"
@@ -49,20 +47,29 @@ config_get() {
 
 append_section() {
   local cfg="$1" _section="$2" block="$3"
-  [[ -r "$cfg" || ! -e "$cfg" ]] || die "Config file not readable: $cfg"
 
-  mkdir -p "$(dirname "$cfg")" 2>/dev/null || true
+  mkdir -p "$(dirname "$cfg")" || die "Cannot create config dir: $(dirname "$cfg")"
 
   if [[ ! -e "$cfg" ]]; then
     : > "$cfg" || die "Cannot create config file: $cfg"
   fi
 
+  [[ -r "$cfg" ]] || die "Config file not readable: $cfg"
+  [[ -w "$cfg" ]] || die "Config file not writable: $cfg"
+
+  local before after
+  before="$(wc -c < "$cfg" || echo 0)"
+
   if [[ -s "$cfg" ]]; then
-    printf "\n%s\n" "$block" >> "$cfg"
+    printf "\n%s\n" "$block" >> "$cfg" || die "Failed writing to config file: $cfg"
   else
-    printf "%s\n" "$block" >> "$cfg"
+    printf "%s\n" "$block" >> "$cfg" || die "Failed writing to config file: $cfg"
   fi
+
+  after="$(wc -c < "$cfg" || echo 0)"
+  (( after > before )) || die "Write did not change config file size: $cfg"
 }
+
 
 delete_section() {
   local cfg="$1" section="$2"
@@ -116,8 +123,20 @@ build_section_block() {
   printf "remote_user=%s\n" "$remote_user"
   printf "remote_host=%s\n" "$remote_host"
   printf "remote_path=%s\n" "$remote_path"
-  [[ -n "$ssh_key" ]] && printf "ssh_key=%s\n" "$ssh_key"
+
+  if [[ -n "$ssh_key" ]]; then
+    printf "ssh_key=%s\n" "$ssh_key"
+  fi
+
   printf "mount_label=%s\n" "$mount_label"
-  [[ -n "$mount_point" ]] && printf "mount_point=%s\n" "$mount_point"
-  [[ -n "$log_file" ]] && printf "log_file=%s\n" "$log_file"
+
+  if [[ -n "$mount_point" ]]; then
+    printf "mount_point=%s\n" "$mount_point"
+  fi
+
+  if [[ -n "$log_file" ]]; then
+    printf "log_file=%s\n" "$log_file"
+  fi
+
+  return 0
 }
