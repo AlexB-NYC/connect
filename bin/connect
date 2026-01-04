@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/common.sh
+. "$BASE_DIR/lib/common.sh"
+# shellcheck source=../lib/config.sh
+. "$BASE_DIR/lib/config.sh"
+
+usage() {
+  cat <<'EOF' >&2
+Usage:
+  connect <servername> [--ssh | --fs] [-v|--verbose] [--insecure]
+  connect --list
+  connect [--engine | --add | --edit | --del]
+
+Modes (mutually exclusive):
+  --ssh           only SSH (no sshfs)
+  --fs            only sshfs mount (no SSH)
+
+Options:
+  --list          list configured servers and exit
+  -v, --verbose   verbose output (ssh -vvv, sshfs_debug)
+  --insecure      disable host key checking (not recommended)
+
+Engine:
+  --engine        open interactive server manager
+  --add           add server entry (delegates to engine)
+  --edit          edit server entry (delegates to engine)
+  --del           delete server entry (delegates to engine)
+EOF
+  exit 1
+}
+
+server=""
+mode="both"      # both|ssh|fs
+verbose=0
+insecure=0
+do_list=0
+engine_action="" # menu|add|edit|del
+
+while (( $# )); do
+  case "$1" in
+    --ssh) mode="ssh"; shift ;;
+    --fs)  mode="fs";  shift ;;
+    -v|--verbose) verbose=1; shift ;;
+    --insecure) insecure=1; shift ;;
+    --list) do_list=1; shift ;;
+
+    --engine) engine_action="menu"; shift ;;
+    --add)    engine_action="add"; shift ;;
+    --edit)   engine_action="edit"; shift ;;
+    --del)    engine_action="del"; shift ;;
+
+    -h|--help) usage ;;
+    -* ) usage ;;
+    *)
+      if [[ -z "$server" ]]; then
+        server="$1"; shift
+      else
+        usage
+      fi
+      ;;
+  esac
+done
+
+# Delegate to engine for management functions
+if [[ -n "$engine_action" ]]; then
+  exec "$BASE_DIR/bin/engine" "$engine_action"
+fi
+
+CONFIG_FILE="$(resolve_config_file)"
+
+if (( do_list )); then
+  [[ -r "$CONFIG_FILE" ]] || die "Config file not readable: $CONFIG_FILE"
+  list_servers "$CONFIG_FILE"
+  exit 0
+fi
+
+# If no server specified, drop into interactive menu
+if [[ -z "$server" ]]; then
+  exec "$BASE_DIR/bin/engine" menu
+fi
+
+section_exists "$CONFIG_FILE" "$server" || die "Server not found in config: [$server]"
+
+remote_user="$(config_get "$CONFIG_FILE" "$server" remote_user)"
+remote_host="$(config_get "$CONFIG_FILE" "$server" remote_host)"
+remote_path="$(config_get "$CONFIG_FILE" "$server" remote_path)"
+mount_label="$(config_get "$CONFIG_FILE" "$server" mount_label)"
+ssh_key="$(config_get "$CONFIG_FILE" "$server" ssh_key)"
+mount_point="$(config_get "$CONFIG_FILE" "$server" mount_point)"
+log_file="$(config_get "$CONFIG_FILE" "$server" log_file)"
+
+[[ -n "$remote_user" ]] || die "Missing remote_user in [$server]"
+[[ -n "$remote_host" ]] || die "Missing remote_host in [$server]"
+[[ -n "$remote_path" ]] || die "Missing remote_path in [$server]"
+[[ -n "$mount_label" ]] || die "Missing mount_label in [$server]"
+
+ssh_key="$(normalize_key_path "$ssh_key")"
+os="$(os_family)"
+
+if [[ -z "${mount_point:-}" ]]; then
+  if [[ "$os" == "mac" ]]; then
+    mount_point="$HOME/mnt/$mount_label"
+  else
+    mount_point="/media/$USER/$mount_label"
+  fi
+fi
+
+if [[ -z "${log_file:-}" ]]; then
+  log_file="${XDG_CACHE_HOME:-$HOME/.cache}/connect/connect.log"
+fi
+
+mkdir -p "$mount_point" "$(dirname "$log_file")"
+
+log() {
+  echo "[$(date +'%F %T')] $*" | tee -a "$log_file" >&2
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
+}
+
+ssh_opts=(
+  -o ServerAliveInterval=60
+  -o ServerAliveCountMax=3
+)
+if (( insecure )); then
+  ssh_opts+=( -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null )
+fi
+if (( verbose )); then
+  ssh_opts+=( -vvv )
+fi
+if [[ -n "$ssh_key" ]]; then
+  ssh_opts=( -i "$ssh_key" "${ssh_opts[@]}" )
+fi
+
+sshfs_opts=(
+  -o reconnect
+  -o allow_other
+  -o ServerAliveInterval=60
+  -o ServerAliveCountMax=3
+)
+if (( insecure )); then
+  sshfs_opts+=(
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+  )
+fi
+(( verbose )) && sshfs_opts+=( -o sshfs_debug )
+[[ -n "$ssh_key" ]] && sshfs_opts+=( -o IdentityFile="$ssh_key" )
+
+unmount_mount_point() {
+  if [[ "$os" == "mac" ]]; then
+    umount "$mount_point" >/dev/null 2>&1 || true
+  else
+    if command -v fusermount >/dev/null 2>&1; then
+      fusermount -u "$mount_point" >/dev/null 2>&1 || true
+    else
+      umount "$mount_point" >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
+if [[ "$mode" == "ssh" ]]; then
+  need_cmd ssh
+  log "SSH only: $remote_user@$remote_host"
+  exec ssh "${ssh_opts[@]}" "$remote_user@$remote_host"
+fi
+
+need_cmd sshfs
+
+if [[ "$os" == "linux" ]]; then
+  if [[ -f /etc/fuse.conf ]] && ! grep -q '^user_allow_other' /etc/fuse.conf; then
+    die "Please uncomment 'user_allow_other' in /etc/fuse.conf (required for -o allow_other)."
+  fi
+fi
+
+if [[ "$mode" == "fs" ]]; then
+  log "FS only: mounting to $mount_point"
+  unmount_mount_point
+  log "sshfs command: sshfs ${sshfs_opts[*]} '$remote_user@$remote_host:$remote_path' '$mount_point'"
+  sshfs "${sshfs_opts[@]}" "$remote_user@$remote_host:$remote_path" "$mount_point" \
+    && log "Mounted." \
+    || die "Mount failed."
+  exit 0
+fi
+
+need_cmd ssh
+log "Mounting $remote_user@$remote_host:$remote_path to $mount_point"
+unmount_mount_point
+log "sshfs command: sshfs ${sshfs_opts[*]} '$remote_user@$remote_host:$remote_path' '$mount_point'"
+
+sshfs "${sshfs_opts[@]}" "$remote_user@$remote_host:$remote_path" "$mount_point" \
+  && log "Mounted successfully." \
+  || die "Mount failed."
+
+log "SSH: $remote_user@$remote_host"
+exec ssh "${ssh_opts[@]}" "$remote_user@$remote_host"

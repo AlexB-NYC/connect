@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../lib/common.sh
+. "$BASE_DIR/lib/common.sh"
+# shellcheck source=../lib/config.sh
+. "$BASE_DIR/lib/config.sh"
+# shellcheck source=../lib/validate.sh
+. "$BASE_DIR/lib/validate.sh"
+
+usage() {
+  cat <<'EOF' >&2
+Usage:
+  engine [menu|add|edit|del] [--config /path/to/servers.conf]
+
+If no subcommand is provided, defaults to "menu".
+EOF
+  exit 1
+}
+
+CONFIG_FILE=""
+while (( $# )); do
+  case "$1" in
+    --config)
+      shift
+      [[ $# -gt 0 ]] || usage
+      CONFIG_FILE="$1"
+      shift
+      ;;
+    -h|--help) usage ;;
+    *) break ;;
+  esac
+done
+
+subcmd="menu"
+if [[ "${1:-}" =~ ^(menu|add|edit|del)$ ]]; then
+  subcmd="$1"
+  shift
+fi
+
+if [[ -z "$CONFIG_FILE" ]]; then
+  CONFIG_FILE="$(resolve_config_file)"
+fi
+
+if [[ ! -e "$CONFIG_FILE" ]]; then
+  mkdir -p "$(dirname "$CONFIG_FILE")" 2>/dev/null || true
+  : > "$CONFIG_FILE" || die "Cannot create config file: $CONFIG_FILE"
+fi
+[[ -r "$CONFIG_FILE" ]] || die "Config file not readable: $CONFIG_FILE"
+
+pick_server_by_number() {
+  local choice="$1"
+  local i=1 line
+  while IFS= read -r line; do
+    if [[ "$i" == "$choice" ]]; then
+      echo "$line"
+      return 0
+    fi
+    i=$((i+1))
+  done < <(list_servers "$CONFIG_FILE")
+  echo ""
+}
+
+print_servers() {
+  echo
+  echo "Config: $CONFIG_FILE"
+  echo "Servers:"
+  local i=1 line
+  while IFS= read -r line; do
+    printf "  %2d) %s\n" "$i" "$line"
+    i=$((i+1))
+  done < <(list_servers "$CONFIG_FILE")
+  echo
+  echo "[A]dd  [E]dit  [D]el  [Q]uit"
+  echo "Enter a number to connect."
+}
+
+do_add() {
+  echo
+  echo "Add a server entry"
+
+  local section
+  section="$(prompt "Server name (section header)" "")"
+  valid_section_name "$section" || die "Invalid server name. Avoid spaces and [ ] characters."
+
+  if section_exists "$CONFIG_FILE" "$section"; then
+    die "Server already exists: [$section]"
+  fi
+
+  local remote_user remote_host remote_path mount_label ssh_key mount_point log_file
+  remote_user="$(prompt "remote_user" "")"
+  remote_host="$(prompt "remote_host" "")"
+  remote_path="$(prompt "remote_path" "/")"
+  mount_label="$(prompt "mount_label" "")"
+  ssh_key="$(prompt "ssh_key (optional, filename or path)" "")"
+  mount_point="$(prompt "mount_point (optional)" "")"
+  log_file="$(prompt "log_file (optional)" "")"
+
+  [[ -n "$remote_user" ]] || die "remote_user required"
+  [[ -n "$remote_host" ]] || die "remote_host required"
+  [[ -n "$remote_path" ]] || die "remote_path required"
+  [[ -n "$mount_label" ]] || die "mount_label required"
+
+  if confirm "Test connectivity and key before saving?"; then
+    local key_path
+    key_path="$(normalize_key_path "$ssh_key")"
+    if [[ -n "$key_path" ]]; then
+      check_key_file "$key_path"
+    fi
+
+    info "Testing SSH connectivity (secure defaults)."
+    if test_ssh_connection "$remote_user" "$remote_host" "$key_path" 0 0; then
+      info "SSH test succeeded."
+    else
+      warn "SSH test failed."
+      if ! confirm "Save anyway?"; then
+        die "Aborted."
+      fi
+    fi
+  fi
+
+  local block
+  block="$(build_section_block "$section" "$remote_user" "$remote_host" "$remote_path" "$mount_label" "$ssh_key" "$mount_point" "$log_file")"
+  append_section "$CONFIG_FILE" "$section" "$block"
+  info "Saved [$section]."
+}
+
+do_edit() {
+  echo
+  local choice section
+  choice="$(prompt "Edit which server number" "")"
+  section="$(pick_server_by_number "$choice")"
+  [[ -n "$section" ]] || die "Invalid selection."
+
+  echo "Editing [$section]"
+
+  local cur_remote_user cur_remote_host cur_remote_path cur_mount_label cur_ssh_key cur_mount_point cur_log_file
+  cur_remote_user="$(config_get "$CONFIG_FILE" "$section" remote_user)"
+  cur_remote_host="$(config_get "$CONFIG_FILE" "$section" remote_host)"
+  cur_remote_path="$(config_get "$CONFIG_FILE" "$section" remote_path)"
+  cur_mount_label="$(config_get "$CONFIG_FILE" "$section" mount_label)"
+  cur_ssh_key="$(config_get "$CONFIG_FILE" "$section" ssh_key)"
+  cur_mount_point="$(config_get "$CONFIG_FILE" "$section" mount_point)"
+  cur_log_file="$(config_get "$CONFIG_FILE" "$section" log_file)"
+
+  local remote_user remote_host remote_path mount_label ssh_key mount_point log_file
+  remote_user="$(prompt "remote_user" "$cur_remote_user")"
+  remote_host="$(prompt "remote_host" "$cur_remote_host")"
+  remote_path="$(prompt "remote_path" "${cur_remote_path:-/}")"
+  mount_label="$(prompt "mount_label" "$cur_mount_label")"
+  ssh_key="$(prompt "ssh_key (optional, blank to remove)" "${cur_ssh_key:-}")"
+  mount_point="$(prompt "mount_point (optional, blank to remove)" "${cur_mount_point:-}")"
+  log_file="$(prompt "log_file (optional, blank to remove)" "${cur_log_file:-}")"
+
+  [[ -n "$remote_user" ]] || die "remote_user required"
+  [[ -n "$remote_host" ]] || die "remote_host required"
+  [[ -n "$remote_path" ]] || die "remote_path required"
+  [[ -n "$mount_label" ]] || die "mount_label required"
+
+  if confirm "Test connectivity and key now?"; then
+    local key_path
+    key_path="$(normalize_key_path "$ssh_key")"
+    if [[ -n "$key_path" ]]; then
+      check_key_file "$key_path"
+    fi
+
+    info "Testing SSH connectivity (secure defaults)."
+    if test_ssh_connection "$remote_user" "$remote_host" "$key_path" 0 0; then
+      info "SSH test succeeded."
+    else
+      warn "SSH test failed."
+      if ! confirm "Save anyway?"; then
+        die "Aborted."
+      fi
+    fi
+  fi
+
+  local block
+  block="$(build_section_block "$section" "$remote_user" "$remote_host" "$remote_path" "$mount_label" "$ssh_key" "$mount_point" "$log_file")"
+  replace_section "$CONFIG_FILE" "$section" "$block"
+  info "Updated [$section]."
+}
+
+do_del() {
+  echo
+  local choice section
+  choice="$(prompt "Delete which server number" "")"
+  section="$(pick_server_by_number "$choice")"
+  [[ -n "$section" ]] || die "Invalid selection."
+
+  echo
+  echo "You are about to delete [$section] from:"
+  echo "  $CONFIG_FILE"
+  echo
+
+  local confirm_name
+  confirm_name="$(prompt "Type the server name to confirm" "")"
+  if [[ "$confirm_name" != "$section" ]]; then
+    die "Confirmation did not match. Aborted."
+  fi
+
+  delete_section "$CONFIG_FILE" "$section"
+  info "Deleted [$section]."
+}
+
+do_connect() {
+  local choice="$1"
+  local section
+  section="$(pick_server_by_number "$choice")"
+  [[ -n "$section" ]] || die "Invalid selection."
+  exec "$BASE_DIR/bin/connect" "$section"
+}
+
+main_loop() {
+  while true; do
+    print_servers
+    local sel
+    sel="$(prompt "Selection (#/A/E/D/Q)" "")"
+    case "$sel" in
+      [Qq]) exit 0 ;;
+      [Aa]) do_add ;;
+      [Ee]) do_edit ;;
+      [Dd]) do_del ;;
+      '' ) ;;
+      * )
+        if [[ "$sel" =~ ^[0-9]+$ ]]; then
+          do_connect "$sel"
+        else
+          warn "Unknown selection: $sel"
+        fi
+        ;;
+    esac
+  done
+}
+
+case "$subcmd" in
+  menu) main_loop ;;
+  add)  do_add ;;
+  edit) do_edit ;;
+  del)  do_del ;;
+  *) usage ;;
+esac
